@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Small Cairo helpers shared by the keyboard and screen views.
 
 use gtk::cairo;

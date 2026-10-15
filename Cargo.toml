@@ -3,6 +3,7 @@ name = "open-steel-studio"
 version = "0.1.0"
 edition = "2024"
 description = "Lighting and OLED screen editor for SteelSeries keyboards"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/Spider-Frog/OpenSteelStudio"
 
 [dependencies]

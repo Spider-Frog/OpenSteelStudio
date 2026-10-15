@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The Screen page: a zoomed pixel editor for the 128×40 OLED, plus text and image tools.
 
 use std::cell::{Cell, RefCell};

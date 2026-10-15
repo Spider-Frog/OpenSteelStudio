@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Turning images and text into 128×40 one-bit bitmaps for the OLED.
 
 use gtk::prelude::*;

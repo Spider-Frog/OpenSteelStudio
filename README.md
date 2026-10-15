@@ -51,3 +51,7 @@ The planned device support only uses commands that change temporary state: per-k
 Protocol details come from the open-source work of [OpenRGB](https://gitlab.com/CalcProgrammer1/OpenRGB) (per-key lighting) and [apex-tux](https://github.com/not-jan/apex-tux) (OLED screen).
 
 OpenSteelStudio is an independent project, not affiliated with or endorsed by SteelSeries.
+
+## License
+
+OpenSteelStudio is free software: you can redistribute it and/or modify it under the terms of the [GNU General Public License](LICENSE) as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.

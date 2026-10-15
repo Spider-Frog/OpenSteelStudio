@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The main window: header bar, page switcher, menu and window actions.
 
 use std::rc::Rc;
@@ -243,6 +245,7 @@ fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, stack: &adw
                 .version(env!("CARGO_PKG_VERSION"))
                 .comments("Lighting and OLED screen editor for SteelSeries keyboards.")
                 .website("https://github.com/Spider-Frog/OpenSteelStudio")
+                .license_type(gtk::License::Gpl30)
                 .issue_url("https://github.com/Spider-Frog/OpenSteelStudio/issues")
                 .build()
                 .present(Some(&window));

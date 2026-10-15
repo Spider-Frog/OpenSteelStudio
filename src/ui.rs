@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared widget helpers and the app's stylesheet.
 
 use adw::prelude::*;

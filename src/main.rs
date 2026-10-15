@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! OpenSteelStudio: lighting and OLED screen editor for SteelSeries keyboards.
 
 mod draw;

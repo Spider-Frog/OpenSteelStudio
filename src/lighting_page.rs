@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The Lighting page: tools, the keyboard view, colors and presets.
 
 use std::collections::BTreeSet;

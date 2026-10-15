@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Shared editor state with simple change notification and undo.
 //!
 //! Pages subscribe to a [`Topic`] and redraw when it is emitted. Mutating

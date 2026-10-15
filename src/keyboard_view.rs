@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! The interactive keyboard drawing on the Lighting page.
 
 use std::cell::{Cell, RefCell};

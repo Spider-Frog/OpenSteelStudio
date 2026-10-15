@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Physical key layout of the SteelSeries Apex 5 (full size, ANSI and ISO).
 //!
 //! Positions are in key units (1u = one standard keycap). Each key carries the

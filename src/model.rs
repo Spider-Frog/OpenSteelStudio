@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Plain data: colors, the per-key lighting state and the 128×40 screen bitmap.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};

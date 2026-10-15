@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Saving and loading the editor state as JSON.
 
 use std::collections::BTreeMap;
