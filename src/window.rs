@@ -16,7 +16,7 @@ use crate::profile::{self, Profile};
 use crate::ui::{icon_button_content, toast};
 use crate::device::{self, Link, Status};
 use crate::profile::Settings;
-use crate::{desktop, engine, keymap, lighting_page, screen_page};
+use crate::{desktop, engine, keymap, lighting_page, screen_page, volume};
 
 const ACCESS_RULES: &str = include_str!("../data/70-open-steel-studio.rules");
 
@@ -103,6 +103,7 @@ pub fn build(app: &adw::Application) {
     let link = Link::new(&editor);
     add_actions(&window, &editor, &link, &stack, &toasts);
     engine::start(&editor);
+    volume::follow(&editor);
     preview_typing(&window, &editor);
     connect_keyboard(&window, &link, &send, &banner, &toasts);
 
@@ -153,6 +154,14 @@ pub fn build(app: &adw::Application) {
     #[cfg(debug_assertions)]
     if let Ok(path) = std::env::var("OPENSTEEL_SCREENSHOT") {
         dev_screenshot(&window, &stack, &editor, path);
+    }
+    // Development aid: `OPENSTEEL_VOLUME=0.65` pretends the volume just changed to 65 %.
+    #[cfg(debug_assertions)]
+    if let Some(level) = std::env::var("OPENSTEEL_VOLUME").ok().and_then(|v| v.parse().ok()) {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1000), glib::clone!(
+            #[strong] editor,
+            move || editor.set_volume(level, false, true)
+        ));
     }
     // Development aid: `OPENSTEEL_CLOSE=1` closes the window shortly after start.
     #[cfg(debug_assertions)]

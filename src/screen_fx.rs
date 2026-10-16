@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::model::{Bitmap, SCREEN_H, SCREEN_W};
 use crate::oled_art::{self, Align, Strip, TextSpec};
+use crate::volume::Level;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -70,6 +71,8 @@ pub struct ScreenFx {
     pub typing: ScreenTyping,
     /// Seconds the typing display stays up after the last key press.
     pub typing_hold: f64,
+    /// Show a volume slider for a moment when the system volume changes.
+    pub volume: bool,
 }
 
 impl Default for ScreenFx {
@@ -85,6 +88,7 @@ impl Default for ScreenFx {
             animation_speed: 1.0,
             typing: ScreenTyping::Off,
             typing_hold: 3.0,
+            volume: true,
         }
     }
 }
@@ -141,6 +145,7 @@ pub struct Inputs<'a> {
     /// When keys were pressed, oldest first. Which keys is deliberately not passed in.
     pub press_times: &'a [f64],
     pub total_presses: u64,
+    pub volume: Option<Level>,
 }
 
 /// Renders reused between frames.
@@ -151,6 +156,9 @@ pub struct Cache {
 }
 
 pub fn render(fx: &ScreenFx, input: &Inputs, cache: &mut Cache) -> Bitmap {
+    if let Some(volume) = input.volume.filter(|v| fx.volume && v.showing(input.t)) {
+        return volume_slider(volume);
+    }
     if fx.typing_visible(input.t, input.press_times.last().copied()) {
         return match fx.typing {
             ScreenTyping::Speed => typing_speed(input.press_times, input.t),
@@ -265,6 +273,53 @@ fn typing_speed(times: &[f64], t: f64) -> Bitmap {
     bitmap
 }
 
+/// Where the slider's bar sits: left, right, top and bottom pixel.
+const BAR: (i32, i32, i32, i32) = (26, 124, 22, 33);
+
+fn volume_slider(volume: Level) -> Bitmap {
+    let small = pango::FontDescription::from_string("Sans Bold 8");
+    let mut bitmap = Bitmap::default();
+    speaker(&mut bitmap, volume.muted);
+    let label = if volume.muted { "MUTED" } else { "VOLUME" };
+    bitmap.merge(&oled_art::render_text(&TextSpec { text: label, font: &small, align: Align::Left, offset: (BAR.0, -11) }));
+    let percent = format!("{:.0}%", volume.level * 100.0);
+    bitmap.merge(&oled_art::render_text(&TextSpec { text: &percent, font: &small, align: Align::Right, offset: (-(SCREEN_W as i32 - BAR.1 - 1), -11) }));
+
+    let (left, right, top, bottom) = BAR;
+    bitmap.line((left, top), (right, top), true);
+    bitmap.line((left, bottom), (right, bottom), true);
+    bitmap.line((left, top), (left, bottom), true);
+    bitmap.line((right, top), (right, bottom), true);
+    if !volume.muted {
+        let inner = (right - left - 3) as f64;
+        let filled = (inner * volume.level.clamp(0.0, 1.0)).round() as i32;
+        for x in left + 2..left + 2 + filled {
+            bitmap.line((x, top + 2), (x, bottom - 2), true);
+        }
+    }
+    bitmap
+}
+
+/// A small loudspeaker on the left, with sound waves or, when muted, a cross.
+fn speaker(bitmap: &mut Bitmap, muted: bool) {
+    for y in 16..=24 {
+        bitmap.line((2, y), (5, y), true);
+    }
+    for i in 0..=6 {
+        bitmap.line((6 + i, 16 - i), (6 + i, 24 + i), true);
+    }
+    if muted {
+        bitmap.line((15, 15), (22, 25), true);
+        bitmap.line((15, 25), (22, 15), true);
+    } else {
+        for points in [[(15, 17), (16, 19), (16, 21), (15, 23)], [(18, 13), (20, 17), (20, 23), (18, 27)]] {
+            for pair in points.windows(2) {
+                bitmap.line(pair[0], pair[1], true);
+            }
+        }
+    }
+}
+
 fn key_counter(total: u64) -> Bitmap {
     let number = pango::FontDescription::from_string("Sans Bold 20");
     let label = pango::FontDescription::from_string("Sans Bold 7");
@@ -315,6 +370,34 @@ mod tests {
     }
 
     #[test]
+    fn volume_slider_follows_the_level() {
+        let fill = |level: f64, muted: bool| {
+            let bitmap = volume_slider(Level { level, muted, changed_at: Some(0.0) });
+            let (left, right, top, bottom) = BAR;
+            (left + 2..right - 1).filter(|&x| bitmap.get(x, (top + bottom) / 2)).count()
+        };
+        let full = fill(1.0, false);
+        assert!(full > 90, "{full}");
+        assert_eq!(fill(0.0, false), 0);
+        assert!((fill(0.5, false) as i32 - full as i32 / 2).abs() <= 1);
+        assert_eq!(fill(1.5, false), full, "boosted volume fills the bar");
+        assert_eq!(fill(0.8, true), 0, "muted shows an empty bar");
+    }
+
+    #[test]
+    fn volume_beats_the_typing_display() {
+        let fx = ScreenFx { typing: ScreenTyping::Counter, ..Default::default() };
+        let (image, animation) = (Bitmap::default(), Animation::default());
+        let volume = Level { level: 0.4, muted: false, changed_at: Some(9.5) };
+        let input = |volume| Inputs { image: &image, animation: &animation, t: 10.0, press_times: &[9.9], total_presses: 3, volume };
+        let mut cache = Cache::default();
+        assert!(render(&fx, &input(Some(volume)), &mut cache) == volume_slider(volume));
+        assert!(render(&fx, &input(None), &mut cache) == key_counter(3));
+        let quiet = ScreenFx { volume: false, ..fx };
+        assert!(render(&quiet, &input(Some(volume)), &mut cache) == key_counter(3), "can be turned off");
+    }
+
+    #[test]
     fn typing_display_shows_then_hides() {
         let fx = ScreenFx { typing: ScreenTyping::Speed, ..Default::default() };
         let presses: Vec<f64> = (0..20).map(|i| 10.0 + i as f64 * 0.2).collect();
@@ -323,7 +406,7 @@ mod tests {
         assert_eq!(words_per_minute(&presses, 40.0), 0);
         let image = Bitmap::default();
         let animation = Animation::default();
-        let input = |t| Inputs { image: &image, animation: &animation, t, press_times: &presses, total_presses: 20 };
+        let input = |t| Inputs { image: &image, animation: &animation, t, press_times: &presses, total_presses: 20, volume: None };
         let mut cache = Cache::default();
         assert!(lit(&render(&fx, &input(14.0), &mut cache)) > 0);
         assert!(lit(&render(&fx, &input(30.0), &mut cache)) == 0, "back to the blank image");

@@ -22,7 +22,7 @@ struct Engine {
 
 pub fn start(editor: &Rc<Editor>) {
     let engine = Rc::new(Engine { editor: Rc::downgrade(editor), cache: RefCell::default(), ticking: Cell::new(false) });
-    for topic in [Topic::Layout, Topic::Lighting, Topic::Screen, Topic::Effects, Topic::ScreenFx, Topic::KeyPress] {
+    for topic in [Topic::Layout, Topic::Lighting, Topic::Screen, Topic::Effects, Topic::ScreenFx, Topic::KeyPress, Topic::Volume] {
         editor.connect(topic, glib::clone!(#[strong] engine, move || engine.wake()));
     }
     engine.wake();
@@ -50,19 +50,23 @@ impl Engine {
     fn animated(&self) -> bool {
         let Some(editor) = self.editor.upgrade() else { return false };
         let (now, last) = (editor.now(), editor.last_press_time());
-        editor.lighting_fx().is_animated(now, last) || editor.screen_fx().is_animated(now, last, &editor.animation())
+        let (lighting, screen) = (editor.lighting_fx(), editor.screen_fx());
+        let volume_up = editor.volume().is_some_and(|v| v.showing(now))
+            && (screen.volume || lighting.volume_bar != crate::effects::VolumeBar::Off);
+        volume_up || lighting.is_animated(now, last) || screen.is_animated(now, last, &editor.animation())
     }
 
     fn render(&self) {
         let Some(editor) = self.editor.upgrade() else { return };
         let t = editor.now();
         let presses = editor.presses();
-        let lighting = effects::render(&editor.lighting_fx(), &editor.output_keys(), &editor.lighting(), t, &presses);
+        let volume = editor.volume();
+        let lighting = effects::render(&editor.lighting_fx(), &editor.output_keys(), &editor.lighting(), t, &presses, volume);
         let animation = editor.animation();
         let screen = {
             let image = editor.screen();
             let times = editor.press_times();
-            let input = screen_fx::Inputs { image: &image, animation: &animation, t, press_times: &times, total_presses: editor.total_presses() };
+            let input = screen_fx::Inputs { image: &image, animation: &animation, t, press_times: &times, total_presses: editor.total_presses(), volume };
             screen_fx::render(&editor.screen_fx(), &input, &mut self.cache.borrow_mut())
         };
         editor.set_frames(lighting, screen);

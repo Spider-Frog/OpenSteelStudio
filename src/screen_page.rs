@@ -809,7 +809,14 @@ fn output_card(editor: &Rc<Editor>) -> gtk::Widget {
     let grid = form(&[("While typing", typing.upcast_ref())]);
     grid.attach(&hold_label, 0, 1, 1, 1);
     grid.attach(&hold, 1, 1, 1, 1);
+    let volume = gtk::CheckButton::builder()
+        .label("Show a slider")
+        .tooltip_text("For a moment after the system volume changes")
+        .build();
+    grid.attach(&gtk::Label::builder().label("Volume").xalign(0.0).css_classes(["dim-label"]).build(), 0, 2, 1, 1);
+    grid.attach(&volume, 1, 2, 1, 1);
     content.append(&grid);
+    volume.connect_toggled(glib::clone!(#[strong] editor, move |c| editor.update_screen_fx(|fx| fx.volume = c.is_active())));
 
     typing.connect_selected_notify(glib::clone!(
         #[strong] editor,
@@ -826,6 +833,9 @@ fn output_card(editor: &Rc<Editor>) -> gtk::Widget {
             let on = fx.typing != ScreenTyping::Off;
             hold.set_visible(on);
             hold_label.set_visible(on);
+            if volume.is_active() != fx.volume {
+                volume.set_active(fx.volume);
+            }
         }
     );
     sync();

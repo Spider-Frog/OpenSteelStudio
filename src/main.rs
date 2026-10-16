@@ -18,6 +18,7 @@ mod profile;
 mod screen_fx;
 mod screen_page;
 mod ui;
+mod volume;
 mod window;
 
 use adw::prelude::*;

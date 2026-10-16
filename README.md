@@ -21,6 +21,7 @@ More SteelSeries devices are planned.
 - Presets: solid, rainbow, rainbow rows, random, gaming (WASD and arrows) and all off
 - Animated effects: breathing, rainbow wave (five directions), color cycle and starlight, with adjustable speed
 - Typing effects: keys light up or send out a ripple when pressed, in any color or rainbow
+- Volume bar: when the system volume changes, F1–F12 or the number row show it for a moment, green to red
 
 **Screen (128×40 OLED)**
 - Pixel editor with pencil, eraser, invert and clear
@@ -29,6 +30,7 @@ More SteelSeries devices are planned.
 - Modes: your image, a clock (with seconds or date), scrolling text, or an animated GIF
 - Import by button or by dropping a file on the screen preview; animated GIFs play automatically, at their own frame timing and an adjustable speed
 - While typing: show your typing speed or a key counter for a few seconds. It never shows which keys you press, so passwords can't be read off the screen
+- Volume slider: when the system volume changes (the volume roller, media keys or any app), a slider with the percentage shows for a moment. Read through PipeWire or PulseAudio with `pactl`
 - Live preview of exactly what the keyboard shows
 
 **General**

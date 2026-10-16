@@ -15,6 +15,7 @@ use crate::effects::{LightingFx, Press};
 use crate::layout::{self, Key, Region};
 use crate::model::{Bitmap, Lighting, Rgb};
 use crate::screen_fx::{Animation, ScreenFx};
+use crate::volume::Level;
 
 const UNDO_LIMIT: usize = 100;
 /// Which keys were pressed is kept this long (seconds), just enough for typing effects.
@@ -46,6 +47,8 @@ pub enum Topic {
     /// Screen mode settings or the animation changed.
     ScreenFx,
     KeyPress,
+    /// The system volume changed.
+    Volume,
     /// New live frames were rendered.
     Frame,
 }
@@ -79,6 +82,7 @@ pub struct Editor {
     press_times: RefCell<VecDeque<f64>>,
     total_presses: Cell<u64>,
     hardware_typing: Cell<bool>,
+    volume: Cell<Option<Level>>,
     /// What the keyboard shows right now, effects included.
     live_lighting: RefCell<Lighting>,
     live_screen: RefCell<Bitmap>,
@@ -110,6 +114,7 @@ impl Editor {
             press_times: RefCell::default(),
             total_presses: Cell::new(0),
             hardware_typing: Cell::new(false),
+            volume: Cell::new(None),
             listeners: RefCell::default(),
         })
     }
@@ -412,6 +417,19 @@ impl Editor {
 
     pub fn total_presses(&self) -> u64 {
         self.total_presses.get()
+    }
+
+    // Volume
+
+    pub fn volume(&self) -> Option<Level> {
+        self.volume.get()
+    }
+
+    /// Records the system volume; `show` brings up the volume display.
+    pub fn set_volume(&self, level: f64, muted: bool, show: bool) {
+        let changed_at = if show { Some(self.now()) } else { self.volume.get().and_then(|v| v.changed_at) };
+        self.volume.set(Some(Level { level, muted, changed_at }));
+        self.emit(Topic::Volume);
     }
 
     // Live output

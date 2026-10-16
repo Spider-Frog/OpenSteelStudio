@@ -9,7 +9,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::editor::{Editor, KeyTool, Topic};
-use crate::effects::{Background, Direction, Typing};
+use crate::effects::{Background, Direction, Typing, VolumeBar};
 use crate::keyboard_view;
 use crate::layout::{self, Key};
 use crate::model::Rgb;
@@ -274,6 +274,8 @@ fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
     color_row.append(&typing_color);
     color_row.append(&rainbow);
     let fade = slider(0.2, 3.0, |v| format!("{v:.1} s"));
+    let volume = gtk::DropDown::from_strings(&VolumeBar::NAMES);
+    volume.set_tooltip_text(Some("Shown for a moment when the system volume changes"));
     let note = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label", "caption"]).build();
 
     let grid = gtk::Grid::builder().row_spacing(8).column_spacing(12).build();
@@ -284,6 +286,7 @@ fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
         ("When typing", typing.clone().upcast()),
         ("Color", color_row.upcast()),
         ("Fade time", fade.clone().upcast()),
+        ("Volume", volume.clone().upcast()),
     ]
     .into_iter()
     .enumerate()
@@ -317,6 +320,10 @@ fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
     ));
     rainbow.connect_toggled(glib::clone!(#[strong] editor, move |c| editor.update_lighting_fx(|fx| fx.typing_rainbow = c.is_active())));
     fade.connect_value_changed(glib::clone!(#[strong] editor, move |s| editor.update_lighting_fx(|fx| fx.fade = s.value())));
+    volume.connect_selected_notify(glib::clone!(
+        #[strong] editor,
+        move |d| editor.update_lighting_fx(|fx| fx.volume_bar = VolumeBar::ALL[d.selected() as usize])
+    ));
 
     // Settings → controls, also when a profile is opened
     let sync = glib::clone!(
@@ -328,6 +335,7 @@ fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
             set_choice(&typing, &Typing::ALL, fx.typing);
             set_slider(&speed, fx.speed);
             set_slider(&fade, fx.fade);
+            set_choice(&volume, &VolumeBar::ALL, fx.volume_bar);
             if from_rgba(&typing_color.rgba()) != fx.typing_color {
                 typing_color.set_rgba(&to_rgba(fx.typing_color));
             }
@@ -337,7 +345,7 @@ fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
             typing_color.set_sensitive(!fx.typing_rainbow);
 
             let typing_on = fx.typing != Typing::Off;
-            let visible = [true, fx.background == Background::Wave, fx.background != Background::Static, true, typing_on, typing_on];
+            let visible = [true, fx.background == Background::Wave, fx.background != Background::Static, true, typing_on, typing_on, true];
             for ((label, widget), show) in rows.iter().zip(visible) {
                 label.set_visible(show);
                 widget.set_visible(show);
