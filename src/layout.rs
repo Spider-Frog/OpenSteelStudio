@@ -190,6 +190,19 @@ pub fn keys(region: Region) -> Vec<Key> {
     b.keys
 }
 
+/// The keys of `region` plus those only the other layout has, so a lighting packet also
+/// covers keys a keyboard has when the wrong layout is selected.
+pub fn keys_with_extras(region: Region) -> Vec<Key> {
+    let other = if region == Region::Ansi { Region::Iso } else { Region::Ansi };
+    let mut all = keys(region);
+    for key in keys(other) {
+        if !all.iter().any(|k| k.led == key.led) {
+            all.push(key);
+        }
+    }
+    all
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,6 +239,15 @@ mod tests {
                     assert!(hits <= 1, "overlap at ({x}, {y}) in {region:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn extras_cover_both_layouts() {
+        for region in [Region::Ansi, Region::Iso] {
+            let leds: HashSet<u8> = keys_with_extras(region).iter().map(|k| k.led).collect();
+            assert_eq!(leds.len(), 106);
+            assert!(leds.contains(&0x31) && leds.contains(&0x32) && leds.contains(&0x64));
         }
     }
 

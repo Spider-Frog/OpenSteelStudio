@@ -13,7 +13,11 @@ use crate::model::{Lighting, Rgb};
 use crate::oled_art::{self, Align, TextSpec};
 use crate::profile::{self, Profile};
 use crate::ui::{icon_button_content, toast};
+use crate::device::{self, Link, Status};
+use crate::profile::Settings;
 use crate::{engine, keymap, lighting_page, screen_page};
+
+const ACCESS_RULES: &str = include_str!("../data/70-open-steel-studio.rules");
 
 pub fn build(app: &adw::Application) {
     if let Some(window) = app.active_window() {
@@ -45,6 +49,7 @@ pub fn build(app: &adw::Application) {
     menu.append_section(None, &files);
     let options = gio::Menu::new();
     options.append(Some("_ISO layout (UK, DE, Nordic)"), Some("win.iso-layout"));
+    options.append(Some("_Give lighting back to the keyboard"), Some("win.restore-lighting"));
     menu.append_section(None, &options);
     let about = gio::Menu::new();
     about.append(Some("_About OpenSteelStudio"), Some("win.about"));
@@ -57,19 +62,13 @@ pub fn build(app: &adw::Application) {
             .tooltip_text("Main menu")
             .build(),
     );
-    header.pack_end(
-        &gtk::Button::builder()
-            .child(&icon_button_content("send-to-symbolic", "Apply"))
-            .css_classes(["suggested-action"])
-            .action_name("win.apply")
-            .tooltip_text("Send the lighting and screen to the keyboard")
-            .build(),
-    );
-
-    let banner = adw::Banner::builder()
-        .title("Preview only: nothing is sent to the keyboard yet. Typing effects react to keys typed in this window.")
-        .revealed(true)
+    let send = gtk::ToggleButton::builder()
+        .child(&icon_button_content("send-to-symbolic", "Send to keyboard"))
+        .tooltip_text("Show the lighting and screen on the keyboard, live")
         .build();
+    header.pack_end(&send);
+
+    let banner = adw::Banner::builder().use_markup(false).build();
 
     let toolbar = adw::ToolbarView::new();
     toolbar.add_top_bar(&header);
@@ -89,9 +88,11 @@ pub fn build(app: &adw::Application) {
         .content(&toasts)
         .build();
 
-    add_actions(&window, &editor, &stack, &toasts);
+    let link = Link::new(&editor);
+    add_actions(&window, &editor, &link, &stack, &toasts);
     engine::start(&editor);
     preview_typing(&window, &editor);
+    connect_keyboard(&window, &link, &send, &banner, &toasts);
 
     // Undo and select all only fire when the focused widget doesn't use the shortcut itself,
     // so they don't steal Ctrl+Z / Ctrl+A from text fields.
@@ -115,6 +116,9 @@ pub fn build(app: &adw::Application) {
     ));
 
     window.present();
+    if Settings::load().send_to_keyboard {
+        send.set_active(true);
+    }
 
     #[cfg(debug_assertions)]
     if let Ok(path) = std::env::var("OPENSTEEL_SCREENSHOT") {
@@ -161,7 +165,7 @@ fn dev_screenshot(window: &adw::ApplicationWindow, stack: &adw::ViewStack, edito
     });
 }
 
-fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, stack: &adw::ViewStack, toasts: &adw::ToastOverlay) {
+fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, link: &Rc<Link>, stack: &adw::ViewStack, toasts: &adw::ToastOverlay) {
     let action = |name: &str, f: Box<dyn Fn()>| {
         let a = gio::SimpleAction::new(name, None);
         a.connect_activate(move |_, _| f());
@@ -186,9 +190,16 @@ fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, stack: &adw
     )));
     action("select-none", Box::new(glib::clone!(#[strong] editor, move || editor.set_selection(Default::default()))));
 
-    action("apply", Box::new(glib::clone!(
+    action("restore-lighting", Box::new(glib::clone!(
         #[weak] toasts,
-        move || toasts.add_toast(adw::Toast::new("Not sent: the keyboard connection comes in the next step"))
+        #[strong] link,
+        move || {
+            let message = match link.restore_keyboard_lighting() {
+                Ok(()) => "The keyboard is back on its own lighting".to_string(),
+                Err(e) => format!("Couldn't reach the keyboard: {e}"),
+            };
+            toasts.add_toast(adw::Toast::new(&message));
+        }
     )));
 
     action("open", Box::new(glib::clone!(
@@ -315,7 +326,9 @@ fn preview_typing(window: &adw::ApplicationWindow, editor: &Rc<Editor>) {
         #[strong] editor,
         #[strong] held,
         move |_, _, keycode, _| {
-            if held.borrow_mut().insert(keycode)
+            // While the keyboard's own key reports are read, they already include these keys.
+            if !editor.hardware_typing()
+                && held.borrow_mut().insert(keycode)
                 && let Some(led) = keymap::led_for_keycode(keycode, editor.region())
             {
                 editor.key_pressed(led);
@@ -332,4 +345,90 @@ fn preview_typing(window: &adw::ApplicationWindow, editor: &Rc<Editor>) {
     // Releases go unseen while another window has focus.
     window.connect_is_active_notify(glib::clone!(#[strong] held, move |_| held.borrow_mut().clear()));
     window.add_controller(keys);
+}
+
+/// Wires the "Send to keyboard" toggle and the status banner to the keyboard link.
+fn connect_keyboard(window: &adw::ApplicationWindow, link: &Rc<Link>, send: &gtk::ToggleButton, banner: &adw::Banner, toasts: &adw::ToastOverlay) {
+    send.connect_toggled(glib::clone!(
+        #[strong] link,
+        move |button| {
+            let on = button.is_active();
+            if on {
+                button.add_css_class("suggested-action");
+            } else {
+                button.remove_css_class("suggested-action");
+            }
+            link.set_enabled(on);
+            Settings { send_to_keyboard: on }.save();
+        }
+    ));
+
+    link.connect_status(glib::clone!(
+        #[weak] send,
+        #[weak] banner,
+        #[weak] toasts,
+        #[strong] link,
+        move |status| {
+            if send.is_active() != link.is_enabled() {
+                send.set_active(link.is_enabled());
+            }
+            send.set_tooltip_text(Some(&device::describe(status)));
+            let (title, button) = match status {
+                Status::Off => (None, None),
+                Status::Connected => {
+                    toasts.add_toast(adw::Toast::builder().title("Connected to your Apex 5").timeout(2).build());
+                    (None, None)
+                }
+                Status::NotFound => (Some("Looking for your Apex 5. Plug it in and it connects by itself.".to_string()), None),
+                Status::NoPermission => (Some("OpenSteelStudio isn't allowed to use the keyboard yet.".to_string()), Some("How to fix")),
+                Status::Unexpected => (
+                    Some("This keyboard describes itself differently from the Apex 5 this app was checked against, so nothing is sent to keep it safe.".to_string()),
+                    None,
+                ),
+                Status::Failed(e) => (Some(format!("Couldn't talk to the keyboard ({e}). Trying again…")), None),
+            };
+            banner.set_title(title.as_deref().unwrap_or_default());
+            banner.set_button_label(button);
+            banner.set_revealed(title.is_some());
+        }
+    ));
+
+    banner.connect_button_clicked(glib::clone!(#[weak] window, move |_| show_access_help(&window)));
+}
+
+fn access_commands() -> String {
+    format!(
+        "sudo tee /etc/udev/rules.d/70-open-steel-studio.rules > /dev/null << 'EOF'\n{ACCESS_RULES}EOF\n\
+         sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw\n"
+    )
+}
+
+fn show_access_help(window: &adw::ApplicationWindow) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Allow access to the keyboard")
+        .body(
+            "Linux only lets programs control the keyboard with permission. Run these commands in a terminal once, \
+             and OpenSteelStudio connects by itself. They only change who may open the keyboard's device files.",
+        )
+        .build();
+    let commands = gtk::Label::builder()
+        .label(access_commands())
+        .selectable(true)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .css_classes(["monospace", "caption"])
+        .margin_top(10)
+        .margin_bottom(10)
+        .margin_start(10)
+        .margin_end(10)
+        .build();
+    let frame = gtk::Box::builder().css_classes(["card"]).build();
+    frame.append(&commands);
+    dialog.set_extra_child(Some(&frame));
+    dialog.add_responses(&[("close", "Close"), ("copy", "Copy commands")]);
+    dialog.set_response_appearance("copy", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("copy"));
+    dialog.connect_response(Some("copy"), |dialog, _| dialog.clipboard().set_text(&access_commands()));
+    dialog.present(Some(window));
 }

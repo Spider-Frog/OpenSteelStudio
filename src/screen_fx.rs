@@ -5,7 +5,6 @@
 use gtk::{glib, pango};
 use serde::{Deserialize, Serialize};
 
-use crate::effects::Press;
 use crate::model::{Bitmap, SCREEN_H, SCREEN_W};
 use crate::oled_art::{self, Align, Strip, TextSpec};
 
@@ -139,7 +138,8 @@ pub struct Inputs<'a> {
     pub animation: &'a Animation,
     /// Seconds since the editor started.
     pub t: f64,
-    pub presses: &'a [Press],
+    /// When keys were pressed, oldest first. Which keys is deliberately not passed in.
+    pub press_times: &'a [f64],
     pub total_presses: u64,
 }
 
@@ -151,9 +151,9 @@ pub struct Cache {
 }
 
 pub fn render(fx: &ScreenFx, input: &Inputs, cache: &mut Cache) -> Bitmap {
-    if fx.typing_visible(input.t, input.presses.last().map(|p| p.t)) {
+    if fx.typing_visible(input.t, input.press_times.last().copied()) {
         return match fx.typing {
-            ScreenTyping::Speed => typing_speed(input.presses, input.t),
+            ScreenTyping::Speed => typing_speed(input.press_times, input.t),
             ScreenTyping::Counter => key_counter(input.total_presses),
             ScreenTyping::Off => unreachable!(),
         };
@@ -227,25 +227,25 @@ fn marquee(fx: &ScreenFx, t: f64, cache: &mut Cache) -> Bitmap {
 
 /// Words per minute (5 keys per word) over the last 10 seconds, or over the time since typing
 /// started if that is shorter, but at least 3 seconds so the first few keys don't spike it.
-pub fn words_per_minute(presses: &[Press], t: f64) -> u32 {
-    let recent: Vec<&Press> = presses.iter().filter(|p| (0.0..10.0).contains(&(t - p.t))).collect();
+pub fn words_per_minute(times: &[f64], t: f64) -> u32 {
+    let recent: Vec<f64> = times.iter().copied().filter(|p| (0.0..10.0).contains(&(t - p))).collect();
     let Some(first) = recent.first() else { return 0 };
-    let window = (t - first.t).clamp(3.0, 10.0);
+    let window = (t - first).clamp(3.0, 10.0);
     (recent.len() as f64 / window * 60.0 / 5.0).round() as u32
 }
 
-fn typing_speed(presses: &[Press], t: f64) -> Bitmap {
+fn typing_speed(times: &[f64], t: f64) -> Bitmap {
     let number = pango::FontDescription::from_string("Sans Bold 20");
     let label = pango::FontDescription::from_string("Sans Bold 7");
-    let wpm = words_per_minute(presses, t).to_string();
+    let wpm = words_per_minute(times, t).to_string();
     let mut bitmap = oled_art::render_text(&TextSpec { text: &wpm, font: &number, align: Align::Left, offset: (3, -5) });
     bitmap.merge(&oled_art::render_text(&TextSpec { text: "WPM", font: &label, align: Align::Left, offset: (4, 14) }));
 
     // Keys per second over the last 16 seconds, newest on the right.
     const BARS: usize = 16;
     let mut buckets = [0u32; BARS];
-    for p in presses {
-        let age = t - p.t;
+    for p in times {
+        let age = t - p;
         if (0.0..BARS as f64).contains(&age) {
             buckets[BARS - 1 - age as usize] += 1;
         }
@@ -317,13 +317,13 @@ mod tests {
     #[test]
     fn typing_display_shows_then_hides() {
         let fx = ScreenFx { typing: ScreenTyping::Speed, ..Default::default() };
-        let presses: Vec<Press> = (0..20).map(|i| Press { led: 4, t: 10.0 + i as f64 * 0.2 }).collect();
+        let presses: Vec<f64> = (0..20).map(|i| 10.0 + i as f64 * 0.2).collect();
         assert_eq!(words_per_minute(&presses, 14.0), 60); // 20 keys in 4 s
         assert_eq!(words_per_minute(&presses[..2], 10.3), 8, "short bursts use the 3 s minimum");
         assert_eq!(words_per_minute(&presses, 40.0), 0);
         let image = Bitmap::default();
         let animation = Animation::default();
-        let input = |t| Inputs { image: &image, animation: &animation, t, presses: &presses, total_presses: 20 };
+        let input = |t| Inputs { image: &image, animation: &animation, t, press_times: &presses, total_presses: 20 };
         let mut cache = Cache::default();
         assert!(lit(&render(&fx, &input(14.0), &mut cache)) > 0);
         assert!(lit(&render(&fx, &input(30.0), &mut cache)) == 0, "back to the blank image");

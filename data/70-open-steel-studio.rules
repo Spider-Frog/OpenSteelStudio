@@ -1,0 +1,5 @@
+# OpenSteelStudio: give the logged-in user access to supported SteelSeries keyboards.
+# This only changes permissions on the device files; it doesn't change the keyboard.
+
+# Apex 5
+KERNEL=="hidraw*", ATTRS{idVendor}=="1038", ATTRS{idProduct}=="161c", TAG+="uaccess"

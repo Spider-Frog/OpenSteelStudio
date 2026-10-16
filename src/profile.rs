@@ -94,6 +94,32 @@ impl Profile {
     }
 }
 
+/// App preferences that aren't part of a profile.
+#[derive(Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Settings {
+    pub send_to_keyboard: bool,
+}
+
+impl Settings {
+    fn path() -> PathBuf {
+        glib::user_config_dir().join("open-steel-studio").join("settings.json")
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(Self::path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        let path = Self::path();
+        let result = std::fs::create_dir_all(path.parent().unwrap_or(&path))
+            .and_then(|()| std::fs::write(&path, serde_json::to_string_pretty(self).unwrap_or_default()));
+        if let Err(e) = result {
+            eprintln!("Couldn't save settings: {e}");
+        }
+    }
+}
+
 /// Where the editor remembers its state between runs.
 pub fn session_path() -> PathBuf {
     glib::user_config_dir().join("open-steel-studio").join("session.json")

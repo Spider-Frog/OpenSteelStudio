@@ -57,11 +57,12 @@ impl Engine {
         let Some(editor) = self.editor.upgrade() else { return };
         let t = editor.now();
         let presses = editor.presses();
-        let lighting = effects::render(&editor.lighting_fx(), &editor.keys(), &editor.lighting(), t, &presses);
+        let lighting = effects::render(&editor.lighting_fx(), &editor.output_keys(), &editor.lighting(), t, &presses);
         let animation = editor.animation();
         let screen = {
             let image = editor.screen();
-            let input = screen_fx::Inputs { image: &image, animation: &animation, t, presses: &presses, total_presses: editor.total_presses() };
+            let times = editor.press_times();
+            let input = screen_fx::Inputs { image: &image, animation: &animation, t, press_times: &times, total_presses: editor.total_presses() };
             screen_fx::render(&editor.screen_fx(), &input, &mut self.cache.borrow_mut())
         };
         editor.set_frames(lighting, screen);

@@ -2,13 +2,13 @@
 
 A native Linux app (Rust, GTK4 and libadwaita) for customizing SteelSeries keyboards: per-key RGB lighting and the little OLED screen.
 
-> **Status: early preview.** The editor UI works, but it doesn't talk to the keyboard yet. Nothing is sent to your device.
+> **Status: early.** Lighting, screen and typing effects work on the Apex 5. Expect rough edges.
 
 ## Supported devices
 
 | Device | USB ID | Editor | Lighting output | Screen output |
 | --- | --- | --- | --- | --- |
-| Apex 5 | `1038:161c` | Yes | Planned | Planned |
+| Apex 5 | `1038:161c` | Yes | Yes | Yes |
 
 More SteelSeries devices are planned.
 
@@ -31,7 +31,8 @@ More SteelSeries devices are planned.
 - Live preview of exactly what the keyboard shows
 
 **General**
-- Typing effects preview with keys typed in the app window. Typing anywhere will work once the keyboard connection is in.
+- **Send to keyboard** shows everything on the keyboard live, and reconnects by itself when the keyboard is unplugged and plugged back in
+- Typing effects react to typing anywhere while sending, and to keys typed in the app window otherwise
 - Undo for each page (Ctrl+Z)
 - Profiles saved as JSON (Ctrl+S / Ctrl+O)
 - Restores your last session on startup
@@ -47,9 +48,34 @@ cargo build --release
 
 On Arch-based systems the libraries come from the `gtk4` and `libadwaita` packages.
 
+## Keyboard access
+
+Linux only lets programs control the keyboard with permission. Install the included udev rule once (the app's "How to fix" button shows the same steps):
+
+```sh
+sudo install -m 644 data/70-open-steel-studio.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=hidraw
+```
+
+The rule only lets the logged-in user open the Apex 5's device files.
+
 ## Keyboard safety
 
-The planned device support only uses commands that change temporary state: per-key colors, handing the lighting back to the keyboard, and screen images. Nothing is written to the keyboard's flash or firmware, and unplugging the keyboard restores its defaults. Commands are only sent when the device's HID descriptor matches the one the protocol was verified against.
+OpenSteelStudio only ever sends three commands, all of which change temporary state: per-key colors, a screen image, and handing the lighting back to the keyboard. Nothing is written to the keyboard's flash or firmware, and unplugging the keyboard restores its defaults.
+
+- Commands are only sent when the keyboard's HID descriptors exactly match the ones the protocol was verified against.
+- Every packet is checked against those three commands and the exact report sizes before it is sent.
+- Frames are only sent when they change, at most 30 times a second.
+- Key presses are read from the keyboard only while a typing effect is on. Which keys were pressed stays in memory for 5 seconds at most and is never saved; the screen never shows which keys you press.
+
+Animations are rendered by the app, so they stop when it closes. Static lighting stays on the keyboard until it is unplugged or goes to sleep.
+
+Command-line tools:
+
+```sh
+open-steel-studio --probe              # read-only: find the keyboard and check its descriptors
+open-steel-studio --restore-lighting   # hand the lighting back to the keyboard's own lighting
+```
 
 ## Acknowledgements
 

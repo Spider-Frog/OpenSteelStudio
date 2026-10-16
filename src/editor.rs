@@ -17,8 +17,10 @@ use crate::model::{Bitmap, Lighting, Rgb};
 use crate::screen_fx::{Animation, ScreenFx};
 
 const UNDO_LIMIT: usize = 100;
-/// Key presses are remembered this long (seconds), for typing effects and statistics.
-const PRESS_MEMORY: f64 = 60.0;
+/// Which keys were pressed is kept this long (seconds), just enough for typing effects.
+const KEY_MEMORY: f64 = 5.0;
+/// When keys were pressed is kept this long, for the typing speed display.
+const TIME_MEMORY: f64 = 20.0;
 
 /// Everything a profile stores.
 #[derive(Clone, Default)]
@@ -60,6 +62,7 @@ type Listener = (Topic, Rc<dyn Fn()>);
 pub struct Editor {
     region: Cell<Region>,
     keys: RefCell<Rc<Vec<Key>>>,
+    output_keys: RefCell<Rc<Vec<Key>>>,
     lighting: RefCell<Lighting>,
     selection: RefCell<BTreeSet<u8>>,
     color: Cell<Rgb>,
@@ -73,7 +76,9 @@ pub struct Editor {
     animation: RefCell<Rc<Animation>>,
     started: Instant,
     presses: RefCell<VecDeque<Press>>,
+    press_times: RefCell<VecDeque<f64>>,
     total_presses: Cell<u64>,
+    hardware_typing: Cell<bool>,
     /// What the keyboard shows right now, effects included.
     live_lighting: RefCell<Lighting>,
     live_screen: RefCell<Bitmap>,
@@ -86,6 +91,7 @@ impl Editor {
         Rc::new(Self {
             region: Cell::new(region),
             keys: RefCell::new(Rc::new(layout::keys(region))),
+            output_keys: RefCell::new(Rc::new(layout::keys_with_extras(region))),
             live_lighting: RefCell::new(lighting.clone()),
             live_screen: RefCell::new(screen.clone()),
             lighting: RefCell::new(lighting),
@@ -101,7 +107,9 @@ impl Editor {
             animation: RefCell::new(Rc::new(animation)),
             started: Instant::now(),
             presses: RefCell::default(),
+            press_times: RefCell::default(),
             total_presses: Cell::new(0),
+            hardware_typing: Cell::new(false),
             listeners: RefCell::default(),
         })
     }
@@ -147,12 +155,18 @@ impl Editor {
         let keys = Rc::new(layout::keys(region));
         self.selection.borrow_mut().retain(|led| keys.iter().any(|k| k.led == *led));
         *self.keys.borrow_mut() = keys;
+        *self.output_keys.borrow_mut() = Rc::new(layout::keys_with_extras(region));
         self.emit(Topic::Layout);
         self.emit(Topic::Selection);
     }
 
     pub fn keys(&self) -> Rc<Vec<Key>> {
         self.keys.borrow().clone()
+    }
+
+    /// Every LED sent to the keyboard: the layout's keys plus the other layout's extras.
+    pub fn output_keys(&self) -> Rc<Vec<Key>> {
+        self.output_keys.borrow().clone()
     }
 
     // Lighting
@@ -353,24 +367,47 @@ impl Editor {
 
     pub fn key_pressed(&self, led: u8) {
         let t = self.now();
-        {
-            let mut presses = self.presses.borrow_mut();
-            presses.push_back(Press { led, t });
-            while presses.front().is_some_and(|p| t - p.t > PRESS_MEMORY) {
-                presses.pop_front();
-            }
-        }
+        self.presses.borrow_mut().push_back(Press { led, t });
+        self.press_times.borrow_mut().push_back(t);
+        self.forget_old_presses();
         self.total_presses.set(self.total_presses.get() + 1);
         self.emit(Topic::KeyPress);
     }
 
-    pub fn last_press_time(&self) -> Option<f64> {
-        self.presses.borrow().back().map(|p| p.t)
+    fn forget_old_presses(&self) {
+        let t = self.now();
+        let mut presses = self.presses.borrow_mut();
+        while presses.front().is_some_and(|p| t - p.t > KEY_MEMORY) {
+            presses.pop_front();
+        }
+        let mut times = self.press_times.borrow_mut();
+        while times.front().is_some_and(|&p| t - p > TIME_MEMORY) {
+            times.pop_front();
+        }
     }
 
-    /// Key presses of the last minute, oldest first.
+    pub fn last_press_time(&self) -> Option<f64> {
+        self.press_times.borrow().back().copied()
+    }
+
+    /// Key presses of the last few seconds, oldest first.
     pub fn presses(&self) -> Vec<Press> {
+        self.forget_old_presses();
         self.presses.borrow().iter().copied().collect()
+    }
+
+    /// When keys were pressed during the last 20 seconds, oldest first.
+    pub fn press_times(&self) -> Vec<f64> {
+        self.press_times.borrow().iter().copied().collect()
+    }
+
+    /// Whether key presses come straight from the keyboard (so the window shouldn't add its own).
+    pub fn hardware_typing(&self) -> bool {
+        self.hardware_typing.get()
+    }
+
+    pub fn set_hardware_typing(&self, on: bool) {
+        self.hardware_typing.set(on);
     }
 
     pub fn total_presses(&self) -> u64 {
