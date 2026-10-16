@@ -24,11 +24,46 @@ pub fn load(file: &gio::File) -> Result<Gray, glib::Error> {
     for y in 0..height {
         let row = &bytes[y * stride..];
         for px in row[..width * 4].as_chunks::<4>().0 {
-            let (r, g, b, a) = (px[0] as f32, px[1] as f32, px[2] as f32, px[3] as f32 / 255.0);
-            data.push(((0.299 * r + 0.587 * g + 0.114 * b) * a).round() as u8);
+            data.push(luminance(px[0], px[1], px[2], px[3]));
         }
     }
     Ok(Gray { width, height, data })
+}
+
+fn luminance(r: u8, g: u8, b: u8, a: u8) -> u8 {
+    ((0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) * (a as f32 / 255.0)).round() as u8
+}
+
+/// Upper bounds for GIF imports, so a huge file can't exhaust memory.
+const MAX_FRAMES: usize = 600;
+const MAX_GIF_BYTES: usize = 256 * 1024 * 1024;
+
+/// Decodes every frame of an animated GIF with its delay in milliseconds.
+pub fn load_gif(path: &std::path::Path) -> Result<Vec<(Gray, u32)>, String> {
+    use image::AnimationDecoder;
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let decoder = image::codecs::gif::GifDecoder::new(std::io::BufReader::new(file)).map_err(|e| e.to_string())?;
+    let mut frames = Vec::new();
+    let mut bytes = 0;
+    for frame in decoder.into_frames() {
+        let frame = frame.map_err(|e| e.to_string())?;
+        let (num, den) = frame.delay().numer_denom_ms();
+        // Browsers treat very short delays as 100 ms; match that.
+        let ms = num.checked_div(den).unwrap_or(0);
+        let ms = if ms < 20 { 100 } else { ms };
+        let buffer = frame.into_buffer();
+        let (width, height) = (buffer.width() as usize, buffer.height() as usize);
+        bytes += width * height;
+        if frames.len() == MAX_FRAMES || bytes > MAX_GIF_BYTES {
+            break;
+        }
+        let data = buffer.pixels().map(|p| luminance(p.0[0], p.0[1], p.0[2], p.0[3])).collect();
+        frames.push((Gray { width, height, data }, ms));
+    }
+    if frames.is_empty() {
+        return Err("the file has no frames".into());
+    }
+    Ok(frames)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -50,10 +85,20 @@ pub struct Conversion {
     pub invert: bool,
 }
 
+#[cfg(test)]
 pub fn convert(src: &Gray, opts: Conversion) -> Bitmap {
+    quantize(&fit(src, opts.fit), opts)
+}
+
+/// An image scaled to the screen: 128×40 luminance values. Scaling is the slow part of a
+/// conversion, so callers keep this around while the tone settings are tweaked.
+#[derive(Clone)]
+pub struct Fitted(Vec<f32>);
+
+pub fn fit(src: &Gray, fit: Fit) -> Fitted {
     let (sw, sh) = (src.width as f64, src.height as f64);
     let (tw, th) = (SCREEN_W as f64, SCREEN_H as f64);
-    let (scale_x, scale_y) = match opts.fit {
+    let (scale_x, scale_y) = match fit {
         Fit::Contain => {
             let s = (tw / sw).min(th / sh);
             (s, s)
@@ -90,7 +135,12 @@ pub fn convert(src: &Gray, opts: Conversion) -> Bitmap {
             gray[dy * SCREEN_W + dx] = sum as f32 / ((iy1 - iy0) * (ix1 - ix0)) as f32;
         }
     }
+    Fitted(gray)
+}
 
+/// Turns a fitted image into lit and dark pixels. `opts.fit` is ignored.
+pub fn quantize(fitted: &Fitted, opts: Conversion) -> Bitmap {
+    let mut gray = fitted.0.clone();
     for v in &mut gray {
         *v = (*v + opts.brightness as f32).clamp(0.0, 255.0);
         if opts.invert {
@@ -147,33 +197,56 @@ pub struct TextSpec<'a> {
     pub offset: (i32, i32),
 }
 
-/// Renders text without antialiasing, so every pixel is clearly on or off.
+/// A Pango layout on `cr` that renders without antialiasing, so every pixel is clearly on or off.
+fn crisp_layout(cr: &cairo::Context, text: &str, font: &pango::FontDescription, align: Align) -> pango::Layout {
+    let context = pangocairo::functions::create_context(cr);
+    if let Ok(mut options) = cairo::FontOptions::new() {
+        options.set_antialias(cairo::Antialias::None);
+        options.set_hint_style(cairo::HintStyle::Full);
+        pangocairo::functions::context_set_font_options(&context, Some(&options));
+    }
+    let layout = pango::Layout::new(&context);
+    layout.set_font_description(Some(font));
+    layout.set_alignment(match align {
+        Align::Left => pango::Alignment::Left,
+        Align::Center => pango::Alignment::Center,
+        Align::Right => pango::Alignment::Right,
+    });
+    layout.set_text(text);
+    layout
+}
+
+/// Renders into a `width`×40 A8 surface and reads it back as lit pixels.
+fn render_a8(width: usize, draw: impl FnOnce(&cairo::Context)) -> Option<Vec<bool>> {
+    let mut surface = cairo::ImageSurface::create(cairo::Format::A8, width as i32, SCREEN_H as i32).ok()?;
+    {
+        let cr = cairo::Context::new(&surface).ok()?;
+        cr.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+        draw(&cr);
+    }
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let data = surface.data().ok()?;
+    Some((0..SCREEN_H).flat_map(|y| (0..width).map(move |x| (x, y))).map(|(x, y)| data[y * stride + x] > 127).collect())
+}
+
+/// Ink extents of `text` in pixels: (x, y, width, height).
+fn ink_extents(text: &str, font: &pango::FontDescription) -> (i32, i32, i32, i32) {
+    let mut extents = (0, 0, 0, 0);
+    render_a8(1, |cr| {
+        let (ink, _) = crisp_layout(cr, text, font, Align::Left).pixel_extents();
+        extents = (ink.x(), ink.y(), ink.width(), ink.height());
+    });
+    extents
+}
+
+/// Renders text onto the screen.
 pub fn render_text(spec: &TextSpec) -> Bitmap {
     if spec.text.trim().is_empty() {
         return Bitmap::default();
     }
-    let Ok(mut surface) = cairo::ImageSurface::create(cairo::Format::A8, SCREEN_W as i32, SCREEN_H as i32) else {
-        return Bitmap::default();
-    };
-    {
-        let Ok(cr) = cairo::Context::new(&surface) else {
-            return Bitmap::default();
-        };
-        let context = pangocairo::functions::create_context(&cr);
-        if let Ok(mut options) = cairo::FontOptions::new() {
-            options.set_antialias(cairo::Antialias::None);
-            options.set_hint_style(cairo::HintStyle::Full);
-            pangocairo::functions::context_set_font_options(&context, Some(&options));
-        }
-        let layout = pango::Layout::new(&context);
-        layout.set_font_description(Some(spec.font));
-        layout.set_alignment(match spec.align {
-            Align::Left => pango::Alignment::Left,
-            Align::Center => pango::Alignment::Center,
-            Align::Right => pango::Alignment::Right,
-        });
-        layout.set_text(spec.text);
-
+    let px = render_a8(SCREEN_W, |cr| {
+        let layout = crisp_layout(cr, spec.text, spec.font, spec.align);
         // Position by the ink rectangle so the text is optically centred.
         let (ink, _) = layout.pixel_extents();
         let x = match spec.align {
@@ -183,15 +256,48 @@ pub fn render_text(spec: &TextSpec) -> Bitmap {
         } + spec.offset.0;
         let y = (SCREEN_H as i32 - ink.height()) / 2 - ink.y() + spec.offset.1;
         cr.move_to(x as f64, y as f64);
-        cr.set_source_rgba(0.0, 0.0, 0.0, 1.0);
-        pangocairo::functions::show_layout(&cr, &layout);
+        pangocairo::functions::show_layout(cr, &layout);
+    });
+    px.map(|px| Bitmap::from_fn(|x, y| px[y * SCREEN_W + x])).unwrap_or_default()
+}
+
+/// Renders centred `text` in `font`, shrinking it as needed until it fits within `max_width` pixels.
+pub fn render_text_fitted(text: &str, font: &pango::FontDescription, max_width: i32, offset: (i32, i32)) -> Bitmap {
+    let mut font = font.clone();
+    let mut size = font.size() / pango::SCALE;
+    while size > 6 && ink_extents(text, &font).2 > max_width {
+        size -= 1;
+        font.set_size(size * pango::SCALE);
     }
-    surface.flush();
-    let stride = surface.stride() as usize;
-    let Ok(data) = surface.data() else {
-        return Bitmap::default();
-    };
-    Bitmap::from_fn(|x, y| data[y * stride + x] > 127)
+    render_text(&TextSpec { text, font: &font, align: Align::Center, offset })
+}
+
+/// A line of text that can be wider than the screen, for scrolling: `width`×40 pixels.
+pub struct Strip {
+    pub width: usize,
+    px: Vec<bool>,
+}
+
+impl Strip {
+    pub fn get(&self, x: i32, y: i32) -> bool {
+        (0..self.width as i32).contains(&x) && (0..SCREEN_H as i32).contains(&y) && self.px[y as usize * self.width + x as usize]
+    }
+}
+
+/// Renders one line of text as a strip exactly as wide as its ink, vertically centred.
+pub fn render_strip(text: &str, font: &pango::FontDescription) -> Strip {
+    let text = text.replace('\n', " ");
+    let (ix, iy, iw, ih) = ink_extents(&text, font);
+    let width = (iw.max(1) as usize).min(16384);
+    let px = render_a8(width, |cr| {
+        let layout = crisp_layout(cr, &text, font, Align::Left);
+        cr.move_to(-ix as f64, ((SCREEN_H as i32 - ih) / 2 - iy) as f64);
+        pangocairo::functions::show_layout(cr, &layout);
+    });
+    match px {
+        Some(px) if iw > 0 => Strip { width, px },
+        _ => Strip { width: 1, px: vec![false; SCREEN_H] },
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +345,42 @@ mod tests {
         assert!((60..=67).contains(&middle), "text centered at x={middle}");
         let blank = render_text(&TextSpec { text: "  ", font: &font, align: Align::Center, offset: (0, 0) });
         assert!(blank == Bitmap::default());
+    }
+
+    #[test]
+    fn fitted_text_shrinks_to_fit() {
+        let font = pango::FontDescription::from_string("Sans Bold 30");
+        let bitmap = render_text_fitted("Numpad Enter", &font, 120, (0, 0));
+        let lit: Vec<i32> = (0..128).filter(|&x| (0..40).any(|y| bitmap.get(x, y))).collect();
+        assert!(lit[0] > 0 && *lit.last().unwrap() < 127, "text touches the edge: {lit:?}");
+    }
+
+    #[test]
+    fn strip_is_as_wide_as_the_text() {
+        let font = pango::FontDescription::from_string("Sans 12");
+        let short = render_strip("Hi", &font);
+        let long = render_strip("Hello there, this is long", &font);
+        assert!(long.width > 128 && long.width > short.width * 5);
+        assert!((0..short.width as i32).any(|x| (0..40).any(|y| short.get(x, y))));
+    }
+
+    #[test]
+    fn gif_frames_and_delays() {
+        use image::codecs::gif::GifEncoder;
+        use image::{Delay, Frame, Rgba, RgbaImage};
+        let path = std::env::temp_dir().join(format!("open-steel-studio-test-{}.gif", std::process::id()));
+        {
+            let mut encoder = GifEncoder::new(std::fs::File::create(&path).unwrap());
+            for (shade, ms) in [(255u8, 100u32), (0, 250)] {
+                let image = RgbaImage::from_pixel(16, 8, Rgba([shade, shade, shade, 255]));
+                encoder.encode_frame(Frame::from_parts(image, 0, 0, Delay::from_numer_denom_ms(ms, 1))).unwrap();
+            }
+        }
+        let frames = load_gif(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        assert_eq!(frames.iter().map(|(_, ms)| *ms).collect::<Vec<_>>(), [100, 250]);
+        assert_eq!(frames[0].0.data[0], 255);
+        assert_eq!(frames[1].0.data[0], 0);
     }
 
     #[test]

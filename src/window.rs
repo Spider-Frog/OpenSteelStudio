@@ -7,13 +7,13 @@ use std::rc::Rc;
 use adw::prelude::*;
 use gtk::{gio, glib};
 
-use crate::editor::{Editor, Topic};
+use crate::editor::{Document, Editor, Topic};
 use crate::layout::{self, Region};
 use crate::model::{Lighting, Rgb};
 use crate::oled_art::{self, Align, TextSpec};
 use crate::profile::{self, Profile};
 use crate::ui::{icon_button_content, toast};
-use crate::{lighting_page, screen_page};
+use crate::{engine, keymap, lighting_page, screen_page};
 
 pub fn build(app: &adw::Application) {
     if let Some(window) = app.active_window() {
@@ -67,7 +67,7 @@ pub fn build(app: &adw::Application) {
     );
 
     let banner = adw::Banner::builder()
-        .title("Preview only. The keyboard connection isn't built yet, so nothing is sent to the keyboard.")
+        .title("Preview only: nothing is sent to the keyboard yet. Typing effects react to keys typed in this window.")
         .revealed(true)
         .build();
 
@@ -90,6 +90,8 @@ pub fn build(app: &adw::Application) {
         .build();
 
     add_actions(&window, &editor, &stack, &toasts);
+    engine::start(&editor);
+    preview_typing(&window, &editor);
 
     // Undo and select all only fire when the focused widget doesn't use the shortcut itself,
     // so they don't steal Ctrl+Z / Ctrl+A from text fields.
@@ -105,7 +107,7 @@ pub fn build(app: &adw::Application) {
     window.connect_close_request(glib::clone!(
         #[strong] editor,
         move |_| {
-            if let Err(e) = Profile::capture(&editor).save(&profile::session_path()) {
+            if let Err(e) = Profile::capture(&editor.document()).save(&profile::session_path()) {
                 eprintln!("Couldn't save the session: {e}");
             }
             glib::Propagation::Proceed
@@ -116,15 +118,32 @@ pub fn build(app: &adw::Application) {
 
     #[cfg(debug_assertions)]
     if let Ok(path) = std::env::var("OPENSTEEL_SCREENSHOT") {
-        dev_screenshot(&window, &stack, path);
+        dev_screenshot(&window, &stack, &editor, path);
     }
 }
 
-/// Development aid: `OPENSTEEL_SCREENSHOT=out.png [OPENSTEEL_PAGE=screen]` renders the window to a PNG and quits.
+/// Development aid: `OPENSTEEL_SCREENSHOT=out.png [OPENSTEEL_PAGE=screen] [OPENSTEEL_TYPE=text]`
+/// renders the window to a PNG and quits, optionally after simulating typing.
 #[cfg(debug_assertions)]
-fn dev_screenshot(window: &adw::ApplicationWindow, stack: &adw::ViewStack, path: String) {
+fn dev_screenshot(window: &adw::ApplicationWindow, stack: &adw::ViewStack, editor: &Rc<Editor>, path: String) {
     if let Ok(page) = std::env::var("OPENSTEEL_PAGE") {
         stack.set_visible_child_name(&page);
+    }
+    if let Ok(text) = std::env::var("OPENSTEEL_TYPE") {
+        let leds: Vec<u8> = text
+            .chars()
+            .filter_map(|c| editor.keys().iter().find(|k| k.label.eq_ignore_ascii_case(&c.to_string())).map(|k| k.led))
+            .collect();
+        let next = std::cell::Cell::new(0);
+        glib::timeout_add_local(std::time::Duration::from_millis(110), glib::clone!(
+            #[strong] editor,
+            move || {
+                let Some(&led) = leds.get(next.get()) else { return glib::ControlFlow::Break };
+                editor.key_pressed(led);
+                next.set(next.get() + 1);
+                glib::ControlFlow::Continue
+            }
+        ));
     }
     let window = window.clone();
     glib::timeout_add_local_once(std::time::Duration::from_millis(1500), move || {
@@ -183,9 +202,9 @@ fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, stack: &adw
                 move |result| {
                     let Ok(path) = result.map(|f| f.path()) else { return };
                     let Some(path) = path else { return };
-                    match Profile::load(&path).and_then(Profile::into_parts) {
-                        Ok((region, lighting, screen)) => {
-                            editor.load(region, lighting, screen);
+                    match Profile::load(&path).and_then(Profile::into_document) {
+                        Ok(doc) => {
+                            editor.load(doc);
                             toast(&window.content().unwrap(), &format!("Opened {}", display_name(&path)));
                         }
                         Err(e) => toast(&window.content().unwrap(), &format!("Couldn't open that profile: {e}")),
@@ -211,7 +230,7 @@ fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, stack: &adw
                 move |result| {
                     let Ok(path) = result.map(|f| f.path()) else { return };
                     let Some(path) = path else { return };
-                    match Profile::capture(&editor).save(&path) {
+                    match Profile::capture(&editor.document()).save(&path) {
                         Ok(()) => toast(&window.content().unwrap(), &format!("Saved {}", display_name(&path))),
                         Err(e) => toast(&window.content().unwrap(), &format!("Couldn't save: {e}")),
                     }
@@ -270,8 +289,8 @@ fn display_name(path: &std::path::Path) -> String {
 fn restore_session() -> Rc<Editor> {
     let path = profile::session_path();
     if path.exists() {
-        match Profile::load(&path).and_then(Profile::into_parts) {
-            Ok((region, lighting, screen)) => return Editor::new(region, lighting, screen),
+        match Profile::load(&path).and_then(Profile::into_document) {
+            Ok(doc) => return Editor::new(doc),
             Err(e) => eprintln!("Ignoring the saved session ({}): {e}", path.display()),
         }
     }
@@ -283,5 +302,34 @@ fn restore_session() -> Rc<Editor> {
     }
     let font = gtk::pango::FontDescription::from_string("Sans Bold 16");
     let screen = oled_art::render_text(&TextSpec { text: "APEX 5", font: &font, align: Align::Center, offset: (0, 0) });
-    Editor::new(Region::Ansi, lighting, screen)
+    Editor::new(Document { region: Region::Ansi, lighting, screen, ..Default::default() })
+}
+
+/// Feeds keys typed while the window has focus into the typing effects. Key repeat is
+/// ignored, like on the real keyboard where holding a key is a single press.
+fn preview_typing(window: &adw::ApplicationWindow, editor: &Rc<Editor>) {
+    let held = Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()));
+    let keys = gtk::EventControllerKey::new();
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    keys.connect_key_pressed(glib::clone!(
+        #[strong] editor,
+        #[strong] held,
+        move |_, _, keycode, _| {
+            if held.borrow_mut().insert(keycode)
+                && let Some(led) = keymap::led_for_keycode(keycode, editor.region())
+            {
+                editor.key_pressed(led);
+            }
+            glib::Propagation::Proceed
+        }
+    ));
+    keys.connect_key_released(glib::clone!(
+        #[strong] held,
+        move |_, _, keycode, _| {
+            held.borrow_mut().remove(&keycode);
+        }
+    ));
+    // Releases go unseen while another window has focus.
+    window.connect_is_active_notify(glib::clone!(#[strong] held, move |_| held.borrow_mut().clear()));
+    window.add_controller(keys);
 }

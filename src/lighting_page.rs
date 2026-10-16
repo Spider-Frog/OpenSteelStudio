@@ -9,6 +9,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::editor::{Editor, KeyTool, Topic};
+use crate::effects::{Background, Direction, Typing};
 use crate::keyboard_view;
 use crate::layout::{self, Key};
 use crate::model::Rgb;
@@ -43,6 +44,7 @@ pub fn build(editor: &Rc<Editor>) -> gtk::Widget {
     let bottom = gtk::Box::builder().spacing(14).homogeneous(true).build();
     bottom.append(&color_card(editor));
     bottom.append(&presets_card(editor));
+    bottom.append(&effects_card(editor));
     root.append(&bottom);
 
     root.upcast()
@@ -129,14 +131,20 @@ fn toolbar(editor: &Rc<Editor>) -> gtk::Widget {
 fn color_card(editor: &Rc<Editor>) -> gtk::Widget {
     let (outer, content) = card("Color", "Painting and filling use this color.");
 
-    let swatches = gtk::Box::builder().spacing(6).build();
+    let swatches = gtk::FlowBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .column_spacing(6)
+        .row_spacing(6)
+        .max_children_per_line(SWATCHES.len() as u32)
+        .halign(gtk::Align::Start)
+        .build();
     for (i, color) in SWATCHES.iter().copied().enumerate() {
         let button = gtk::Button::builder()
             .css_classes(["swatch", &format!("swatch-{i}")])
             .tooltip_text(color.to_hex())
             .build();
         button.connect_clicked(glib::clone!(#[strong] editor, move |_| editor.set_color(color)));
-        swatches.append(&button);
+        swatches.insert(&button, -1);
     }
     content.append(&swatches);
 
@@ -226,7 +234,7 @@ fn presets_card(editor: &Rc<Editor>) -> gtk::Widget {
         .selection_mode(gtk::SelectionMode::None)
         .column_spacing(6)
         .row_spacing(6)
-        .min_children_per_line(3)
+        .min_children_per_line(2)
         .max_children_per_line(6)
         .homogeneous(true)
         .build();
@@ -249,6 +257,125 @@ fn presets_card(editor: &Rc<Editor>) -> gtk::Widget {
     }
     content.append(&flow);
     outer.upcast()
+}
+
+fn effects_card(editor: &Rc<Editor>) -> gtk::Widget {
+    let (outer, content) = card("Effects", "Animations run on your computer while the app is open.");
+
+    let background = gtk::DropDown::from_strings(&Background::NAMES);
+    let direction = gtk::DropDown::from_strings(&Direction::NAMES);
+    let speed = slider(0.2, 3.0, |v| format!("{v:.1}×"));
+    let typing = gtk::DropDown::from_strings(&Typing::NAMES);
+    let typing_color = gtk::ColorDialogButton::new(Some(
+        gtk::ColorDialog::builder().with_alpha(false).title("Typing color").build(),
+    ));
+    let rainbow = gtk::CheckButton::with_label("Rainbow");
+    let color_row = gtk::Box::builder().spacing(10).build();
+    color_row.append(&typing_color);
+    color_row.append(&rainbow);
+    let fade = slider(0.2, 3.0, |v| format!("{v:.1} s"));
+    let note = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label", "caption"]).build();
+
+    let grid = gtk::Grid::builder().row_spacing(8).column_spacing(12).build();
+    let rows: Vec<(gtk::Label, gtk::Widget)> = [
+        ("Effect", background.clone().upcast::<gtk::Widget>()),
+        ("Direction", direction.clone().upcast()),
+        ("Speed", speed.clone().upcast()),
+        ("When typing", typing.clone().upcast()),
+        ("Color", color_row.upcast()),
+        ("Fade time", fade.clone().upcast()),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (name, widget))| {
+        let label = gtk::Label::builder().label(name).xalign(0.0).css_classes(["dim-label"]).build();
+        grid.attach(&label, 0, i as i32, 1, 1);
+        grid.attach(&widget, 1, i as i32, 1, 1);
+        (label, widget)
+    })
+    .collect();
+    content.append(&grid);
+    content.append(&note);
+
+    // Controls → settings
+    background.connect_selected_notify(glib::clone!(
+        #[strong] editor,
+        move |d| editor.update_lighting_fx(|fx| fx.background = Background::ALL[d.selected() as usize])
+    ));
+    direction.connect_selected_notify(glib::clone!(
+        #[strong] editor,
+        move |d| editor.update_lighting_fx(|fx| fx.direction = Direction::ALL[d.selected() as usize])
+    ));
+    speed.connect_value_changed(glib::clone!(#[strong] editor, move |s| editor.update_lighting_fx(|fx| fx.speed = s.value())));
+    typing.connect_selected_notify(glib::clone!(
+        #[strong] editor,
+        move |d| editor.update_lighting_fx(|fx| fx.typing = Typing::ALL[d.selected() as usize])
+    ));
+    typing_color.connect_rgba_notify(glib::clone!(
+        #[strong] editor,
+        move |b| editor.update_lighting_fx(|fx| fx.typing_color = from_rgba(&b.rgba()))
+    ));
+    rainbow.connect_toggled(glib::clone!(#[strong] editor, move |c| editor.update_lighting_fx(|fx| fx.typing_rainbow = c.is_active())));
+    fade.connect_value_changed(glib::clone!(#[strong] editor, move |s| editor.update_lighting_fx(|fx| fx.fade = s.value())));
+
+    // Settings → controls, also when a profile is opened
+    let sync = glib::clone!(
+        #[strong] editor,
+        move || {
+            let fx = editor.lighting_fx();
+            set_choice(&background, &Background::ALL, fx.background);
+            set_choice(&direction, &Direction::ALL, fx.direction);
+            set_choice(&typing, &Typing::ALL, fx.typing);
+            set_slider(&speed, fx.speed);
+            set_slider(&fade, fx.fade);
+            if from_rgba(&typing_color.rgba()) != fx.typing_color {
+                typing_color.set_rgba(&to_rgba(fx.typing_color));
+            }
+            if rainbow.is_active() != fx.typing_rainbow {
+                rainbow.set_active(fx.typing_rainbow);
+            }
+            typing_color.set_sensitive(!fx.typing_rainbow);
+
+            let typing_on = fx.typing != Typing::Off;
+            let visible = [true, fx.background == Background::Wave, fx.background != Background::Static, true, typing_on, typing_on];
+            for ((label, widget), show) in rows.iter().zip(visible) {
+                label.set_visible(show);
+                widget.set_visible(show);
+            }
+            note.set_label(match fx.background {
+                Background::Static => "",
+                b if b.uses_key_colors() => "Animates the colors you painted.",
+                _ => "Replaces the colors you painted while it runs.",
+            });
+            note.set_visible(!note.label().is_empty());
+        }
+    );
+    sync();
+    editor.connect(Topic::Effects, sync);
+    outer.upcast()
+}
+
+/// A horizontal slider that shows its value through `format`.
+pub fn slider(min: f64, max: f64, format: fn(f64) -> String) -> gtk::Scale {
+    let scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, min, max, 0.1);
+    scale.set_hexpand(true);
+    scale.set_draw_value(true);
+    scale.set_value_pos(gtk::PositionType::Right);
+    scale.set_format_value_func(move |_, v| format(v));
+    scale
+}
+
+pub fn set_slider(scale: &gtk::Scale, value: f64) {
+    if (scale.value() - value).abs() > 1e-9 {
+        scale.set_value(value);
+    }
+}
+
+pub fn set_choice<T: PartialEq>(dropdown: &gtk::DropDown, all: &[T], value: T) {
+    let index = all.iter().position(|v| *v == value).unwrap_or(0) as u32;
+    if dropdown.selected() != index {
+        dropdown.set_selected(index);
+    }
 }
 
 pub fn to_rgba(c: Rgb) -> gdk::RGBA {

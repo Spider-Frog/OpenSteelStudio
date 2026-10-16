@@ -7,13 +7,29 @@
 //! to read the state.
 
 use std::cell::{Cell, Ref, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::rc::Rc;
+use std::time::Instant;
 
+use crate::effects::{LightingFx, Press};
 use crate::layout::{self, Key, Region};
 use crate::model::{Bitmap, Lighting, Rgb};
+use crate::screen_fx::{Animation, ScreenFx};
 
 const UNDO_LIMIT: usize = 100;
+/// Key presses are remembered this long (seconds), for typing effects and statistics.
+const PRESS_MEMORY: f64 = 60.0;
+
+/// Everything a profile stores.
+#[derive(Clone, Default)]
+pub struct Document {
+    pub region: Region,
+    pub lighting: Lighting,
+    pub screen: Bitmap,
+    pub lighting_fx: LightingFx,
+    pub screen_fx: ScreenFx,
+    pub animation: Animation,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Topic {
@@ -23,6 +39,13 @@ pub enum Topic {
     Color,
     Tool,
     Screen,
+    /// Lighting effect settings changed.
+    Effects,
+    /// Screen mode settings or the animation changed.
+    ScreenFx,
+    KeyPress,
+    /// New live frames were rendered.
+    Frame,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,14 +68,26 @@ pub struct Editor {
     screen: RefCell<Bitmap>,
     lighting_undo: RefCell<Vec<Lighting>>,
     screen_undo: RefCell<Vec<Bitmap>>,
+    lighting_fx: RefCell<LightingFx>,
+    screen_fx: RefCell<ScreenFx>,
+    animation: RefCell<Rc<Animation>>,
+    started: Instant,
+    presses: RefCell<VecDeque<Press>>,
+    total_presses: Cell<u64>,
+    /// What the keyboard shows right now, effects included.
+    live_lighting: RefCell<Lighting>,
+    live_screen: RefCell<Bitmap>,
     listeners: RefCell<Vec<Listener>>,
 }
 
 impl Editor {
-    pub fn new(region: Region, lighting: Lighting, screen: Bitmap) -> Rc<Self> {
+    pub fn new(doc: Document) -> Rc<Self> {
+        let Document { region, lighting, screen, lighting_fx, screen_fx, animation } = doc;
         Rc::new(Self {
             region: Cell::new(region),
             keys: RefCell::new(Rc::new(layout::keys(region))),
+            live_lighting: RefCell::new(lighting.clone()),
+            live_screen: RefCell::new(screen.clone()),
             lighting: RefCell::new(lighting),
             selection: RefCell::default(),
             color: Cell::new(Rgb::new(0x00, 0xc8, 0xff)),
@@ -61,8 +96,25 @@ impl Editor {
             screen: RefCell::new(screen),
             lighting_undo: RefCell::default(),
             screen_undo: RefCell::default(),
+            lighting_fx: RefCell::new(lighting_fx),
+            screen_fx: RefCell::new(screen_fx),
+            animation: RefCell::new(Rc::new(animation)),
+            started: Instant::now(),
+            presses: RefCell::default(),
+            total_presses: Cell::new(0),
             listeners: RefCell::default(),
         })
+    }
+
+    pub fn document(&self) -> Document {
+        Document {
+            region: self.region(),
+            lighting: self.lighting().clone(),
+            screen: self.screen().clone(),
+            lighting_fx: self.lighting_fx(),
+            screen_fx: self.screen_fx(),
+            animation: (*self.animation()).clone(),
+        }
     }
 
     pub fn connect(&self, topic: Topic, f: impl Fn() + 'static) {
@@ -244,11 +296,104 @@ impl Editor {
         true
     }
 
-    /// Replaces everything at once, e.g. when opening a profile. Undoable per page.
-    pub fn load(&self, region: Region, lighting: Lighting, screen: Bitmap) {
-        self.set_region(region);
-        self.edit_lighting(|l| *l = lighting);
-        self.edit_screen(|s| *s = screen);
+    /// Replaces everything at once, e.g. when opening a profile. Colors and image are undoable.
+    pub fn load(&self, doc: Document) {
+        self.set_region(doc.region);
+        self.edit_lighting(|l| *l = doc.lighting);
+        self.edit_screen(|s| *s = doc.screen);
+        self.update_lighting_fx(|fx| *fx = doc.lighting_fx);
+        self.update_screen_fx(|fx| *fx = doc.screen_fx);
+        self.set_animation(doc.animation);
+    }
+
+    // Effects
+
+    pub fn lighting_fx(&self) -> LightingFx {
+        self.lighting_fx.borrow().clone()
+    }
+
+    pub fn update_lighting_fx(&self, f: impl FnOnce(&mut LightingFx)) {
+        let before = self.lighting_fx();
+        f(&mut self.lighting_fx.borrow_mut());
+        if *self.lighting_fx.borrow() != before {
+            self.emit(Topic::Effects);
+        }
+    }
+
+    pub fn screen_fx(&self) -> ScreenFx {
+        self.screen_fx.borrow().clone()
+    }
+
+    pub fn update_screen_fx(&self, f: impl FnOnce(&mut ScreenFx)) {
+        let before = self.screen_fx();
+        f(&mut self.screen_fx.borrow_mut());
+        if *self.screen_fx.borrow() != before {
+            self.emit(Topic::ScreenFx);
+        }
+    }
+
+    pub fn animation(&self) -> Rc<Animation> {
+        self.animation.borrow().clone()
+    }
+
+    pub fn set_animation(&self, animation: Animation) {
+        if **self.animation.borrow() == animation {
+            return;
+        }
+        *self.animation.borrow_mut() = Rc::new(animation);
+        self.emit(Topic::ScreenFx);
+    }
+
+    // Typing
+
+    /// Seconds since the editor started; the clock all animations run on.
+    pub fn now(&self) -> f64 {
+        self.started.elapsed().as_secs_f64()
+    }
+
+    pub fn key_pressed(&self, led: u8) {
+        let t = self.now();
+        {
+            let mut presses = self.presses.borrow_mut();
+            presses.push_back(Press { led, t });
+            while presses.front().is_some_and(|p| t - p.t > PRESS_MEMORY) {
+                presses.pop_front();
+            }
+        }
+        self.total_presses.set(self.total_presses.get() + 1);
+        self.emit(Topic::KeyPress);
+    }
+
+    pub fn last_press_time(&self) -> Option<f64> {
+        self.presses.borrow().back().map(|p| p.t)
+    }
+
+    /// Key presses of the last minute, oldest first.
+    pub fn presses(&self) -> Vec<Press> {
+        self.presses.borrow().iter().copied().collect()
+    }
+
+    pub fn total_presses(&self) -> u64 {
+        self.total_presses.get()
+    }
+
+    // Live output
+
+    pub fn live_lighting(&self) -> Ref<'_, Lighting> {
+        self.live_lighting.borrow()
+    }
+
+    pub fn live_screen(&self) -> Ref<'_, Bitmap> {
+        self.live_screen.borrow()
+    }
+
+    pub fn set_frames(&self, lighting: Lighting, screen: Bitmap) {
+        let changed = *self.live_lighting.borrow() != lighting || *self.live_screen.borrow() != screen;
+        if changed {
+            *self.live_lighting.borrow_mut() = lighting;
+            *self.live_screen.borrow_mut() = screen;
+            self.emit(Topic::Frame);
+        }
     }
 }
 

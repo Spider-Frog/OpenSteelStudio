@@ -8,11 +8,14 @@ use std::path::{Path, PathBuf};
 use gtk::glib;
 use serde::{Deserialize, Serialize};
 
-use crate::editor::Editor;
+use crate::editor::Document;
+use crate::effects::LightingFx;
 use crate::layout::{self, Region};
 use crate::model::{Bitmap, Lighting, Rgb};
+use crate::screen_fx::{Animation, ScreenFx};
 
-const VERSION: u32 = 1;
+/// Version 2 added effects, screen modes and animations; version 1 files still load.
+const VERSION: u32 = 2;
 
 #[derive(Serialize, Deserialize)]
 pub struct Profile {
@@ -21,21 +24,38 @@ pub struct Profile {
     /// LED id as `0x..` → color
     pub keys: BTreeMap<String, Rgb>,
     /// 40 rows of 32 hex digits, see [`Bitmap::to_rows`]
-    pub screen: Vec<String>,
+    pub screen: Bitmap,
+    #[serde(default)]
+    pub effects: LightingFx,
+    #[serde(default)]
+    pub screen_mode: ScreenFx,
+    #[serde(default, skip_serializing_if = "is_empty")]
+    pub animation: Animation,
+}
+
+fn is_empty(animation: &Animation) -> bool {
+    animation.frames.is_empty()
 }
 
 impl Profile {
-    pub fn capture(editor: &Editor) -> Self {
-        let lighting = editor.lighting();
+    pub fn capture(doc: &Document) -> Self {
         // Keys of both layouts, so switching layout later keeps every color.
         let mut keys = BTreeMap::new();
         for key in layout::keys(Region::Ansi).into_iter().chain(layout::keys(Region::Iso)) {
-            keys.insert(format!("0x{:02x}", key.led), lighting.get(key.led));
+            keys.insert(format!("0x{:02x}", key.led), doc.lighting.get(key.led));
         }
-        Self { version: VERSION, layout: editor.region(), keys, screen: editor.screen().to_rows() }
+        Self {
+            version: VERSION,
+            layout: doc.region,
+            keys,
+            screen: doc.screen.clone(),
+            effects: doc.lighting_fx.clone(),
+            screen_mode: doc.screen_fx.clone(),
+            animation: doc.animation.clone(),
+        }
     }
 
-    pub fn into_parts(self) -> Result<(Region, Lighting, Bitmap), String> {
+    pub fn into_document(self) -> Result<Document, String> {
         if self.version > VERSION {
             return Err(format!("made by a newer version of the editor (format {})", self.version));
         }
@@ -47,8 +67,17 @@ impl Profile {
                 .ok_or_else(|| format!("invalid key id {id:?}"))?;
             lighting.set(led, color);
         }
-        let screen = Bitmap::from_rows(&self.screen).ok_or("the screen image is malformed")?;
-        Ok((self.layout, lighting, screen))
+        if self.animation.frames.len() != self.animation.delays_ms.len() {
+            return Err("the animation is malformed".into());
+        }
+        Ok(Document {
+            region: self.layout,
+            lighting,
+            screen: self.screen,
+            lighting_fx: self.effects,
+            screen_fx: self.screen_mode,
+            animation: self.animation,
+        })
     }
 
     pub fn load(path: &Path) -> Result<Self, String> {
@@ -73,26 +102,45 @@ pub fn session_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::effects::Background;
+    use crate::screen_fx::ScreenMode;
 
     #[test]
     fn round_trip() {
-        let mut lighting = Lighting::default();
-        lighting.set(0x04, Rgb::new(1, 2, 3));
-        lighting.set(0x64, Rgb::new(4, 5, 6)); // ISO-only key survives in an ANSI profile
-        let screen = Bitmap::from_fn(|x, y| x == y);
-        let editor = Editor::new(Region::Ansi, lighting, screen.clone());
+        let mut doc = Document::default();
+        doc.lighting.set(0x04, Rgb::new(1, 2, 3));
+        doc.lighting.set(0x64, Rgb::new(4, 5, 6)); // ISO-only key survives in an ANSI profile
+        doc.screen = Bitmap::from_fn(|x, y| x == y);
+        doc.lighting_fx.background = Background::Wave;
+        doc.screen_fx.mode = ScreenMode::Animation;
+        doc.animation = Animation { frames: vec![Bitmap::default(), doc.screen.clone()], delays_ms: vec![100, 50] };
 
-        let json = serde_json::to_string(&Profile::capture(&editor)).unwrap();
-        let (region, lighting, loaded) = serde_json::from_str::<Profile>(&json).unwrap().into_parts().unwrap();
-        assert_eq!(region, Region::Ansi);
-        assert_eq!(lighting.get(0x04), Rgb::new(1, 2, 3));
-        assert_eq!(lighting.get(0x64), Rgb::new(4, 5, 6));
-        assert!(loaded == screen);
+        let json = serde_json::to_string(&Profile::capture(&doc)).unwrap();
+        let loaded = serde_json::from_str::<Profile>(&json).unwrap().into_document().unwrap();
+        assert_eq!(loaded.region, Region::Ansi);
+        assert_eq!(loaded.lighting.get(0x04), Rgb::new(1, 2, 3));
+        assert_eq!(loaded.lighting.get(0x64), Rgb::new(4, 5, 6));
+        assert!(loaded.screen == doc.screen);
+        assert_eq!(loaded.lighting_fx, doc.lighting_fx);
+        assert_eq!(loaded.screen_fx, doc.screen_fx);
+        assert_eq!(loaded.animation, doc.animation);
+    }
+
+    #[test]
+    fn loads_version_1_files() {
+        let rows: Vec<String> = vec!["0".repeat(32); 40];
+        let json = serde_json::json!({ "version": 1, "layout": "iso", "keys": { "0x04": "#ff0000" }, "screen": rows });
+        let doc = serde_json::from_value::<Profile>(json).unwrap().into_document().unwrap();
+        assert_eq!(doc.region, Region::Iso);
+        assert_eq!(doc.lighting.get(0x04), Rgb::new(255, 0, 0));
+        assert_eq!(doc.lighting_fx, LightingFx::default());
     }
 
     #[test]
     fn rejects_bad_ids() {
-        let profile = Profile { version: 1, layout: Region::Iso, keys: [("A".into(), Rgb::BLACK)].into(), screen: Bitmap::default().to_rows() };
-        assert!(profile.into_parts().is_err());
+        let profile = Profile::capture(&Document::default());
+        let mut json = serde_json::to_value(&profile).unwrap();
+        json["keys"] = serde_json::json!({ "A": "#000000" });
+        assert!(serde_json::from_value::<Profile>(json).unwrap().into_document().is_err());
     }
 }

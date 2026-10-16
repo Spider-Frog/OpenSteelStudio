@@ -112,7 +112,7 @@ pub const SCREEN_W: usize = 128;
 pub const SCREEN_H: usize = 40;
 
 /// The monochrome OLED image, row-major, `true` = lit pixel.
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Bitmap {
     px: Vec<bool>,
 }
@@ -220,6 +220,19 @@ impl Bitmap {
             }
         }
         Some(bitmap)
+    }
+}
+
+impl Serialize for Bitmap {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.to_rows().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Bitmap {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let rows = Vec::<String>::deserialize(d)?;
+        Bitmap::from_rows(&rows).ok_or_else(|| serde::de::Error::custom("malformed screen image"))
     }
 }
 

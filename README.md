@@ -19,14 +19,19 @@ More SteelSeries devices are planned.
 - Select keys by clicking, Shift-clicking or dragging a box; paint them, or pick a color from a key
 - Swatches, a full color picker and hex input
 - Presets: solid, rainbow, rainbow rows, random, gaming (WASD and arrows) and all off
+- Animated effects: breathing, rainbow wave (five directions), color cycle and starlight, with adjustable speed
+- Typing effects: keys light up or send out a ripple when pressed, in any color or rainbow
 
 **Screen (128×40 OLED)**
 - Pixel editor with pencil, eraser, invert and clear
 - Text in any installed font, with alignment and pixel offsets
 - Image import with fit, fill or stretch, dithering, invert and brightness
-- Actual-size preview
+- Modes: your image, a clock (with seconds or date), scrolling text, or an animated GIF
+- While typing: show your typing speed or a key counter for a few seconds. It never shows which keys you press, so passwords can't be read off the screen
+- Live preview of exactly what the keyboard shows
 
 **General**
+- Typing effects preview with keys typed in the app window. Typing anywhere will work once the keyboard connection is in.
 - Undo for each page (Ctrl+Z)
 - Profiles saved as JSON (Ctrl+S / Ctrl+O)
 - Restores your last session on startup

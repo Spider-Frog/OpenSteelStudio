@@ -4,12 +4,16 @@
 
 mod draw;
 mod editor;
+mod effects;
+mod engine;
 mod keyboard_view;
+mod keymap;
 mod layout;
 mod lighting_page;
 mod model;
 mod oled_art;
 mod profile;
+mod screen_fx;
 mod screen_page;
 mod ui;
 mod window;

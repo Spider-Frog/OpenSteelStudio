@@ -77,7 +77,7 @@ pub fn build(editor: &Rc<Editor>) -> gtk::Widget {
         }
     ));
 
-    for topic in [Topic::Layout, Topic::Lighting, Topic::Selection, Topic::Screen] {
+    for topic in [Topic::Layout, Topic::Selection, Topic::Frame] {
         editor.connect(topic, glib::clone!(#[weak] area, move || area.queue_draw()));
     }
 
@@ -270,14 +270,14 @@ fn paint(editor: &Editor, cr: &cairo::Context, w: f64, h: f64, hover: Option<u8>
     cr.set_line_width(1.0);
     let _ = cr.stroke();
 
-    // OLED, mirroring the Screen page
+    // OLED, showing what the keyboard's screen shows
     let (ox, oy, ow, oh) = layout::OLED;
     let (x, y) = t.to_widget((ox, oy));
     draw::rounded_rect(cr, x, y, ow * u, oh * u, 0.06 * u);
     cr.set_source_rgb(0.0, 0.0, 0.0);
     let _ = cr.fill();
     let m = 0.07 * u;
-    draw::bitmap(cr, &editor.screen(), (x + m, y + m, ow * u - 2.0 * m, oh * u - 2.0 * m), OLED_ON, (0.0, 0.0, 0.0, 0.0));
+    draw::bitmap(cr, &editor.live_screen(), (x + m, y + m, ow * u - 2.0 * m, oh * u - 2.0 * m), OLED_ON, (0.0, 0.0, 0.0, 0.0));
 
     // Media key and volume roller (decorative)
     let (mx, my) = t.to_widget((ox + ow + 0.42, 0.5));
@@ -299,7 +299,7 @@ fn paint(editor: &Editor, cr: &cairo::Context, w: f64, h: f64, hover: Option<u8>
 
     // Keys
     let keys = editor.keys();
-    let lighting = editor.lighting();
+    let lighting = editor.live_lighting();
     let selection = editor.selection();
     let text = pangocairo::functions::create_layout(cr);
     let mut font = pango::FontDescription::from_string("Sans");
