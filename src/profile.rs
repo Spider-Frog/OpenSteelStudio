@@ -99,6 +99,8 @@ impl Profile {
 #[serde(default)]
 pub struct Settings {
     pub send_to_keyboard: bool,
+    /// Whether the note about running in the background has been shown.
+    pub background_note_shown: bool,
 }
 
 impl Settings {
@@ -110,7 +112,14 @@ impl Settings {
         std::fs::read_to_string(Self::path()).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
     }
 
-    pub fn save(&self) {
+    /// Changes some settings and saves them, keeping the rest.
+    pub fn update(f: impl FnOnce(&mut Settings)) {
+        let mut settings = Self::load();
+        f(&mut settings);
+        settings.save();
+    }
+
+    fn save(&self) {
         let path = Self::path();
         let result = std::fs::create_dir_all(path.parent().unwrap_or(&path))
             .and_then(|()| std::fs::write(&path, serde_json::to_string_pretty(self).unwrap_or_default()));

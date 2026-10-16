@@ -3,6 +3,7 @@
 //! The main window: header bar, page switcher, menu and window actions.
 
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -15,15 +16,24 @@ use crate::profile::{self, Profile};
 use crate::ui::{icon_button_content, toast};
 use crate::device::{self, Link, Status};
 use crate::profile::Settings;
-use crate::{engine, keymap, lighting_page, screen_page};
+use crate::{desktop, engine, keymap, lighting_page, screen_page};
 
 const ACCESS_RULES: &str = include_str!("../data/70-open-steel-studio.rules");
 
+/// Set by `--background`: the first activation keeps the window hidden.
+static START_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn start_hidden() {
+    START_HIDDEN.store(true, Ordering::Relaxed);
+}
+
 pub fn build(app: &adw::Application) {
+    // Launching the app again, or clicking its notification, shows the (maybe hidden) window.
     if let Some(window) = app.active_window() {
         window.present();
         return;
     }
+    let hidden = START_HIDDEN.swap(false, Ordering::Relaxed);
 
     let editor = restore_session();
 
@@ -50,9 +60,11 @@ pub fn build(app: &adw::Application) {
     let options = gio::Menu::new();
     options.append(Some("_ISO layout (UK, DE, Nordic)"), Some("win.iso-layout"));
     options.append(Some("_Give lighting back to the keyboard"), Some("win.restore-lighting"));
+    options.append(Some("Start at _login"), Some("win.autostart"));
     menu.append_section(None, &options);
     let about = gio::Menu::new();
     about.append(Some("_About OpenSteelStudio"), Some("win.about"));
+    about.append(Some("_Quit"), Some("app.quit"));
     menu.append_section(None, &about);
     header.pack_end(
         &gtk::MenuButton::builder()
@@ -105,24 +117,47 @@ pub fn build(app: &adw::Application) {
     }
     window.add_controller(shortcuts);
 
+    add_app_actions(app, &window, &editor);
+
+    // While sending to the keyboard, closing the window keeps the app running in the
+    // background, so animations and typing effects carry on.
     window.connect_close_request(glib::clone!(
         #[strong] editor,
-        move |_| {
-            if let Err(e) = Profile::capture(&editor.document()).save(&profile::session_path()) {
-                eprintln!("Couldn't save the session: {e}");
+        #[strong] link,
+        #[weak] app,
+        #[upgrade_or] glib::Propagation::Proceed,
+        move |window| {
+            save_session(&editor);
+            if !link.is_enabled() {
+                return glib::Propagation::Proceed;
             }
-            glib::Propagation::Proceed
+            window.set_visible(false);
+            note_running_in_background(&app);
+            glib::Propagation::Stop
         }
     ));
 
-    window.present();
-    if Settings::load().send_to_keyboard {
+    let sending = Settings::load().send_to_keyboard;
+    if hidden && !sending {
+        // Started at login with nothing to send: nothing to do.
+        window.destroy();
+        return;
+    }
+    if !hidden {
+        window.present();
+    }
+    if sending {
         send.set_active(true);
     }
 
     #[cfg(debug_assertions)]
     if let Ok(path) = std::env::var("OPENSTEEL_SCREENSHOT") {
         dev_screenshot(&window, &stack, &editor, path);
+    }
+    // Development aid: `OPENSTEEL_CLOSE=1` closes the window shortly after start.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPENSTEEL_CLOSE").is_some() {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1500), glib::clone!(#[weak] window, move || window.close()));
     }
 }
 
@@ -163,6 +198,51 @@ fn dev_screenshot(window: &adw::ApplicationWindow, stack: &adw::ViewStack, edito
             app.quit();
         }
     });
+}
+
+fn save_session(editor: &Editor) {
+    if let Err(e) = Profile::capture(&editor.document()).save(&profile::session_path()) {
+        eprintln!("Couldn't save the session: {e}");
+    }
+}
+
+/// Quitting has to be possible while the window is hidden, so it is an app action:
+/// from the menu, Ctrl+Q, the notification, or `open-steel-studio --quit`.
+fn add_app_actions(app: &adw::Application, window: &adw::ApplicationWindow, editor: &Rc<Editor>) {
+    let quit = gio::SimpleAction::new("quit", None);
+    quit.connect_activate(glib::clone!(
+        #[strong] editor,
+        #[weak] app,
+        move |_, _| {
+            save_session(&editor);
+            app.quit();
+        }
+    ));
+    app.add_action(&quit);
+    app.set_accels_for_action("app.quit", &["<Control>q"]);
+
+    let show = gio::SimpleAction::new("show", None);
+    show.connect_activate(glib::clone!(#[weak] window, move |_, _| window.present()));
+    app.add_action(&show);
+}
+
+/// The first time the window is closed while sending, explain where the app went.
+fn note_running_in_background(app: &adw::Application) {
+    if Settings::load().background_note_shown {
+        return;
+    }
+    // A launcher lets the user reopen the window, and lets GNOME show the notification.
+    if let Err(e) = desktop::install_launcher() {
+        eprintln!("Couldn't add OpenSteelStudio to the app menu: {e}");
+    }
+    let notification = gio::Notification::new("OpenSteelStudio keeps running");
+    notification.set_body(Some(
+        "It keeps your keyboard's lighting and screen going. Open it from your app menu to make changes, or quit it from its menu.",
+    ));
+    notification.set_default_action("app.show");
+    notification.add_button("Quit", "app.quit");
+    app.send_notification(Some("background"), &notification);
+    Settings::update(|s| s.background_note_shown = true);
 }
 
 fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, link: &Rc<Link>, stack: &adw::ViewStack, toasts: &adw::ToastOverlay) {
@@ -266,6 +346,25 @@ fn add_actions(window: &adw::ApplicationWindow, editor: &Rc<Editor>, link: &Rc<L
     ));
     window.add_action(&iso);
 
+    let autostart = gio::SimpleAction::new_stateful("autostart", None, &desktop::autostart_enabled().to_variant());
+    autostart.connect_change_state(glib::clone!(
+        #[weak] toasts,
+        move |a, value| {
+            let Some(on) = value.and_then(|v| v.get::<bool>()) else { return };
+            let result = desktop::set_autostart(on).and_then(|()| if on { desktop::install_launcher() } else { Ok(()) });
+            match result {
+                Ok(()) => {
+                    a.set_state(&on.to_variant());
+                    if on {
+                        toasts.add_toast(adw::Toast::new("OpenSteelStudio will start at login, without a window"));
+                    }
+                }
+                Err(e) => toasts.add_toast(adw::Toast::new(&format!("Couldn't change the login setting: {e}"))),
+            }
+        }
+    ));
+    window.add_action(&autostart);
+
     action("about", Box::new(glib::clone!(
         #[weak] window,
         move || {
@@ -359,7 +458,7 @@ fn connect_keyboard(window: &adw::ApplicationWindow, link: &Rc<Link>, send: &gtk
                 button.remove_css_class("suggested-action");
             }
             link.set_enabled(on);
-            Settings { send_to_keyboard: on }.save();
+            Settings::update(|s| s.send_to_keyboard = on);
         }
     ));
 

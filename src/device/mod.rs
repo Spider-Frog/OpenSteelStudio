@@ -314,9 +314,19 @@ impl Link {
     }
 }
 
+/// Where to look for hidraw devices. Debug builds can be pointed elsewhere for testing
+/// (`OPENSTEEL_SYSFS`), so a test run never reaches a real keyboard.
+fn sysfs() -> std::path::PathBuf {
+    #[cfg(debug_assertions)]
+    if let Ok(path) = std::env::var("OPENSTEEL_SYSFS") {
+        return path.into();
+    }
+    SYSFS.into()
+}
+
 /// Finds the keyboard and opens its control interface, after checking its descriptor.
 fn open_control() -> Result<(Handle, Vec<Interface>), Status> {
-    let found = hidraw::find(Path::new(SYSFS), Path::new(DEV), apex5::VENDOR, apex5::PRODUCT);
+    let found = hidraw::find(&sysfs(), Path::new(DEV), apex5::VENDOR, apex5::PRODUCT);
     // With several Apex 5s connected, use the first one.
     let Some(port) = found.first().map(|i| i.port.clone()) else { return Err(Status::NotFound) };
     let interfaces: Vec<Interface> = found.into_iter().filter(|i| i.port == port).collect();
@@ -445,7 +455,7 @@ pub fn describe(status: &Status) -> String {
 
 /// A read-only check for the command line: finds the keyboard and verifies its descriptors.
 pub fn probe() -> String {
-    let found = hidraw::find(Path::new(SYSFS), Path::new(DEV), apex5::VENDOR, apex5::PRODUCT);
+    let found = hidraw::find(&sysfs(), Path::new(DEV), apex5::VENDOR, apex5::PRODUCT);
     if found.is_empty() {
         return "No SteelSeries Apex 5 (1038:161c) found.".into();
     }

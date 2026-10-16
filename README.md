@@ -36,6 +36,7 @@ More SteelSeries devices are planned.
 - Undo for each page (Ctrl+Z)
 - Profiles saved as JSON (Ctrl+S / Ctrl+O)
 - Restores your last session on startup
+- Keeps running in the background while sending, and can start at login (see below)
 
 ## Building
 
@@ -68,13 +69,21 @@ OpenSteelStudio only ever sends three commands, all of which change temporary st
 - Frames are only sent when they change, at most 30 times a second.
 - Key presses are read from the keyboard only while a typing effect is on. Which keys were pressed stays in memory for 5 seconds at most and is never saved; the screen never shows which keys you press.
 
-Animations are rendered by the app, so they stop when it closes. Static lighting stays on the keyboard until it is unplugged or goes to sleep.
+## Running in the background
+
+Animations, typing effects, the clock and GIFs are rendered by the app, not stored on the keyboard (storing them would mean writing the keyboard's flash, which OpenSteelStudio never does). So the app keeps running while it sends:
+
+- Closing the window while **Send to keyboard** is on keeps the app running without a window. Open it again from your app menu (the first time it adds itself there and shows a notification).
+- **Start at login** in the main menu starts it without a window when you log in, so your lighting comes back after a reboot.
+- **Quit** in the main menu (Ctrl+Q), or `open-steel-studio --quit`, stops it completely.
 
 Command-line tools:
 
 ```sh
 open-steel-studio --probe              # read-only: find the keyboard and check its descriptors
 open-steel-studio --restore-lighting   # hand the lighting back to the keyboard's own lighting
+open-steel-studio --background         # start without a window (used at login)
+open-steel-studio --quit               # stop the running copy
 ```
 
 ## Acknowledgements

@@ -2,6 +2,7 @@
 
 //! OpenSteelStudio: lighting and OLED screen editor for SteelSeries keyboards.
 
+mod desktop;
 mod device;
 mod draw;
 mod editor;
@@ -20,9 +21,9 @@ mod ui;
 mod window;
 
 use adw::prelude::*;
-use gtk::glib;
+use gtk::{gio, glib};
 
-const APP_ID: &str = "io.github.Spider_Frog.OpenSteelStudio";
+pub const APP_ID: &str = "io.github.Spider_Frog.OpenSteelStudio";
 
 fn main() -> glib::ExitCode {
     // Command-line tools, handled before GTK starts.
@@ -47,10 +48,72 @@ fn main() -> glib::ExitCode {
         _ => {}
     }
 
+    let mut args: Vec<String> = std::env::args().collect();
+    let background = args.iter().any(|a| a == desktop::BACKGROUND_FLAG);
+    let quit = args.iter().any(|a| a == "--quit");
+    args.retain(|a| a != desktop::BACKGROUND_FLAG && a != "--quit");
+
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|_| ui::load_css());
     app.connect_activate(window::build);
     app.set_accels_for_action("win.open", &["<Control>o"]);
     app.set_accels_for_action("win.save", &["<Control>s"]);
-    app.run()
+
+    if quit {
+        // Stops the running copy, which may have no window to close.
+        return match running_instance() {
+            Some(bus) => match bus.call_sync(
+                Some(APP_ID),
+                &object_path(),
+                "org.gtk.Actions",
+                "Activate",
+                Some(&("quit", Vec::<glib::Variant>::new(), std::collections::HashMap::<String, glib::Variant>::new()).to_variant()),
+                None,
+                gio::DBusCallFlags::NONE,
+                -1,
+                gio::Cancellable::NONE,
+            ) {
+                Ok(_) => glib::ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("Couldn't stop OpenSteelStudio: {e}");
+                    glib::ExitCode::FAILURE
+                }
+            },
+            None => {
+                println!("OpenSteelStudio isn't running.");
+                glib::ExitCode::SUCCESS
+            }
+        };
+    }
+    if background {
+        if running_instance().is_some() {
+            return glib::ExitCode::SUCCESS; // already running; don't pop up its window
+        }
+        window::start_hidden();
+    }
+    app.run_with_args(&args)
+}
+
+/// The session bus, if a copy of the app is already running on it.
+fn running_instance() -> Option<gio::DBusConnection> {
+    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
+    let reply = bus
+        .call_sync(
+            Some("org.freedesktop.DBus"),
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameHasOwner",
+            Some(&(APP_ID,).to_variant()),
+            None,
+            gio::DBusCallFlags::NONE,
+            -1,
+            gio::Cancellable::NONE,
+        )
+        .ok()?;
+    reply.get::<(bool,)>().is_some_and(|(owned,)| owned).then_some(bus)
+}
+
+/// Where GApplication exports its actions: the app id as a path, like /io/github/….
+fn object_path() -> String {
+    format!("/{}", APP_ID.replace('.', "/").replace('-', "_"))
 }
