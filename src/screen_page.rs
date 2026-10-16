@@ -3,7 +3,7 @@
 //! The Screen page: what the 128×40 OLED shows. In Image mode it is a zoomed pixel editor
 //! with text and image tools; the other modes animate (clock, scrolling text, GIF).
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -62,6 +62,9 @@ struct Page {
     preview: RefCell<Bitmap>,
     image: RefCell<Option<ImageImport>>,
     gif: RefCell<Option<GifImport>>,
+    /// Conversion settings of the Image and Animation cards.
+    image_tone: OnceCell<ToneControls>,
+    gif_tone: OnceCell<ToneControls>,
     last_pixel: Cell<Option<(i32, i32)>>,
 }
 
@@ -93,6 +96,8 @@ pub fn build(editor: &Rc<Editor>) -> gtk::Widget {
         preview: RefCell::default(),
         image: RefCell::default(),
         gif: RefCell::default(),
+        image_tone: OnceCell::new(),
+        gif_tone: OnceCell::new(),
         last_pixel: Cell::new(None),
     });
 
@@ -121,6 +126,20 @@ pub fn build(editor: &Rc<Editor>) -> gtk::Widget {
         .build();
     frame.append(&aspect);
     root.append(&frame);
+
+    // Drop a picture or GIF anywhere on the screen preview to import it.
+    let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
+    drop.connect_drop(glib::clone!(
+        #[strong] page,
+        #[weak] frame,
+        #[upgrade_or] false,
+        move |_, value, _, _| {
+            let Ok(file) = value.get::<gio::File>() else { return false };
+            import_file(&page, &file, &frame);
+            true
+        }
+    ));
+    frame.add_controller(drop);
 
     let modes = gtk::Stack::builder().hexpand(true).transition_type(gtk::StackTransitionType::Crossfade).build();
     let image_cards = gtk::Box::builder().spacing(14).build();
@@ -166,6 +185,16 @@ pub fn build(editor: &Rc<Editor>) -> gtk::Widget {
     );
     show_mode();
     editor.connect(Topic::ScreenFx, show_mode);
+
+    // Development aid: `OPENSTEEL_IMPORT=file` imports a file at startup, like a drop would.
+    #[cfg(debug_assertions)]
+    if let Ok(path) = std::env::var("OPENSTEEL_IMPORT") {
+        glib::idle_add_local_once(glib::clone!(
+            #[strong] page,
+            #[weak] root,
+            move || import_file(&page, &gio::File::for_path(path), &root)
+        ));
+    }
 
     root.upcast()
 }
@@ -223,7 +252,7 @@ fn toolbar(page: &Rc<Page>) -> gtk::Widget {
             let editing = current == ScreenMode::Image;
             tools.set_visible(editing);
             edits.set_visible(editing);
-            hint.set_label(if editing { "128 × 40 pixels, monochrome" } else { "Live preview" });
+            hint.set_label(if editing { "128 × 40 pixels · drop an image or GIF to import it" } else { "Live preview" });
         }
     );
     sync();
@@ -513,7 +542,7 @@ fn open_dialog(button: &gtk::Button, title: &str, filter: gtk::FileFilter, done:
 }
 
 fn image_card(page: &Rc<Page>) -> gtk::Widget {
-    let (outer, content) = card("Image", "Imported images are scaled and converted to black and white.");
+    let (outer, content) = card("Image", "Pictures are scaled and turned black and white. Animated GIFs play in Animation mode.");
 
     let open = gtk::Button::builder()
         .child(&icon_button_content("insert-image-symbolic", "Import image…"))
@@ -521,6 +550,7 @@ fn image_card(page: &Rc<Page>) -> gtk::Widget {
         .build();
     content.append(&open);
     let tone = ToneControls::new(&content);
+    let _ = page.image_tone.set(tone.clone());
 
     // Re-run the conversion while the screen still shows the untouched import.
     tone.connect_changed(glib::clone!(
@@ -542,30 +572,57 @@ fn image_card(page: &Rc<Page>) -> gtk::Widget {
 
     open.connect_clicked(glib::clone!(
         #[strong] page,
-        #[strong] tone,
         move |button| {
             let filter = gtk::FileFilter::new();
-            filter.set_name(Some("Images"));
+            filter.set_name(Some("Images and GIFs"));
             filter.add_mime_type("image/*");
             open_dialog(button, "Import image", filter, glib::clone!(
                 #[strong] page,
-                #[strong] tone,
                 #[weak] button,
-                move |file| match oled_art::load(&file) {
-                    Ok(gray) => {
-                        let opts = tone.options();
-                        let mut source = Source::new(gray, opts.fit);
-                        let bitmap = source.convert(opts);
-                        page.editor.edit_screen(|s| *s = bitmap.clone());
-                        *page.image.borrow_mut() = Some(ImageImport { source, result: bitmap });
-                    }
-                    Err(e) => toast(&button, &format!("Couldn't open that image: {}", e.message())),
-                }
+                move |file| import_file(&page, &file, &button)
             ));
         }
     ));
 
     outer.upcast()
+}
+
+/// Imports any picture: an animated GIF becomes the animation, anything else the image.
+/// `widget` is where errors and notes are shown.
+fn import_file(page: &Rc<Page>, file: &gio::File, widget: &impl IsA<gtk::Widget>) {
+    // The GIF decoder rejects other formats straight away, so trying it first is cheap.
+    match file.path().map(|path| oled_art::load_gif(&path)) {
+        Some(Ok(frames)) if frames.len() > 1 => {
+            import_animation(page, frames);
+            toast(widget, "Playing the GIF as an animation");
+        }
+        Some(Ok(mut frames)) => import_image(page, frames.remove(0).0),
+        _ => match oled_art::load(file) {
+            Ok(gray) => import_image(page, gray),
+            Err(e) => toast(widget, &format!("Couldn't open that file: {}", e.message())),
+        },
+    }
+}
+
+fn import_image(page: &Page, gray: Gray) {
+    let Some(tone) = page.image_tone.get() else { return };
+    let opts = tone.options();
+    let mut source = Source::new(gray, opts.fit);
+    let bitmap = source.convert(opts);
+    page.editor.edit_screen(|s| *s = bitmap.clone());
+    page.editor.update_screen_fx(|fx| fx.mode = ScreenMode::Image);
+    *page.image.borrow_mut() = Some(ImageImport { source, result: bitmap });
+}
+
+fn import_animation(page: &Page, decoded: Vec<(Gray, u32)>) {
+    let Some(tone) = page.gif_tone.get() else { return };
+    let opts = tone.options();
+    let (mut frames, delays_ms): (Vec<Source>, Vec<u32>) =
+        decoded.into_iter().map(|(gray, ms)| (Source::new(gray, opts.fit), ms)).unzip();
+    let result = Animation { frames: frames.iter_mut().map(|f| f.convert(opts)).collect(), delays_ms: delays_ms.clone() };
+    page.editor.set_animation(result.clone());
+    page.editor.update_screen_fx(|fx| fx.mode = ScreenMode::Animation);
+    *page.gif.borrow_mut() = Some(GifImport { frames, delays_ms, result });
 }
 
 fn clock_card(editor: &Rc<Editor>) -> gtk::Widget {
@@ -660,6 +717,7 @@ fn animation_card(page: &Rc<Page>) -> gtk::Widget {
     let speed = slider(0.2, 3.0, |v| format!("{v:.1}×"));
     content.append(&form(&[("Speed", speed.upcast_ref())]));
     let tone = ToneControls::new(&content);
+    let _ = page.gif_tone.set(tone.clone());
 
     speed.connect_value_changed(glib::clone!(#[strong] editor, move |s| editor.update_screen_fx(|fx| fx.animation_speed = s.value())));
 
@@ -685,27 +743,19 @@ fn animation_card(page: &Rc<Page>) -> gtk::Widget {
 
     open.connect_clicked(glib::clone!(
         #[strong] page,
-        #[strong] tone,
         move |button| {
             let filter = gtk::FileFilter::new();
             filter.set_name(Some("GIF animations"));
             filter.add_mime_type("image/gif");
             open_dialog(button, "Import GIF", filter, glib::clone!(
                 #[strong] page,
-                #[strong] tone,
                 #[weak] button,
                 move |file| {
-                    let Some(path) = file.path() else { return };
+                    let Some(path) = file.path() else {
+                        return toast(&button, "Only files on this computer can be imported");
+                    };
                     match oled_art::load_gif(&path) {
-                        Ok(decoded) => {
-                            let opts = tone.options();
-                            let (mut frames, delays_ms): (Vec<Source>, Vec<u32>) =
-                                decoded.into_iter().map(|(gray, ms)| (Source::new(gray, opts.fit), ms)).unzip();
-                            let result = Animation { frames: frames.iter_mut().map(|f| f.convert(opts)).collect(), delays_ms: delays_ms.clone() };
-                            page.editor.set_animation(result.clone());
-                            page.editor.update_screen_fx(|fx| fx.mode = ScreenMode::Animation);
-                            *page.gif.borrow_mut() = Some(GifImport { frames, delays_ms, result });
-                        }
+                        Ok(decoded) => import_animation(&page, decoded),
                         Err(e) => toast(&button, &format!("Couldn't open that GIF: {e}")),
                     }
                 }

@@ -54,6 +54,11 @@ fn main() -> glib::ExitCode {
     args.retain(|a| a != desktop::BACKGROUND_FLAG && a != "--quit");
 
     let app = adw::Application::builder().application_id(APP_ID).build();
+    // Development screenshots run as a separate instance that never talks to a running copy.
+    #[cfg(debug_assertions)]
+    if std::env::var_os("OPENSTEEL_SCREENSHOT").is_some() {
+        app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
+    }
     app.connect_startup(|_| ui::load_css());
     app.connect_activate(window::build);
     app.set_accels_for_action("win.open", &["<Control>o"]);

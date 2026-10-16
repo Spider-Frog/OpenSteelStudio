@@ -27,6 +27,7 @@ More SteelSeries devices are planned.
 - Text in any installed font, with alignment and pixel offsets
 - Image import with fit, fill or stretch, dithering, invert and brightness
 - Modes: your image, a clock (with seconds or date), scrolling text, or an animated GIF
+- Import by button or by dropping a file on the screen preview; animated GIFs play automatically, at their own frame timing and an adjustable speed
 - While typing: show your typing speed or a key counter for a few seconds. It never shows which keys you press, so passwords can't be read off the screen
 - Live preview of exactly what the keyboard shows
 
