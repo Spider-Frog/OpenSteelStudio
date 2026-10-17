@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Debian 13 ships GTK 4.18 and libadwaita 1.7, new enough for the app, with an older
+    # glibc than rolling distributions, so what builds here runs on most current ones.
+    container: rust:1-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install GTK, libadwaita and a font for the text tests
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends pkg-config libgtk-4-dev libadwaita-1-dev fonts-dejavu-core
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup component add clippy
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

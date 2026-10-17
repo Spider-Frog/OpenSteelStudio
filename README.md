@@ -41,6 +41,17 @@ More SteelSeries devices are planned.
 - Restores your last session on startup
 - Keeps running in the background while sending, and can start at login (see below)
 
+## Install
+
+Download the latest `open-steel-studio-…-x86_64-linux.tar.gz` from [Releases](https://github.com/Spider-Frog/OpenSteelStudio/releases), then:
+
+```sh
+tar xzf open-steel-studio-*-x86_64-linux.tar.gz
+install -Dm755 open-steel-studio-*-x86_64-linux/open-steel-studio ~/.local/bin/open-steel-studio
+```
+
+It needs GTK 4.12 and libadwaita 1.6 or newer (for example Debian 13, Fedora 41 or Arch). To let it use the keyboard, install the included udev rule as described under [Keyboard access](#keyboard-access).
+
 ## Building
 
 Requirements: Rust (stable), GTK 4.12 or newer, libadwaita 1.6 or newer.

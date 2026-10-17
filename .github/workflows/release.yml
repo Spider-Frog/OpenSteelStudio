@@ -1,0 +1,44 @@
+name: Release
+
+# Push a tag like v0.1.0 (matching the version in Cargo.toml) to publish a release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Same base as CI: binaries built on Debian 13 run on Debian 13, Fedora, Arch and newer.
+    container: rust:1-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check the tag matches Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
+            exit 1
+          fi
+      - name: Install GTK, libadwaita and a font for the text tests
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends pkg-config libgtk-4-dev libadwaita-1-dev fonts-dejavu-core
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: Package
+        run: |
+          name="open-steel-studio-$GITHUB_REF_NAME-x86_64-linux"
+          mkdir "$name"
+          cp target/release/open-steel-studio README.md LICENSE data/70-open-steel-studio.rules "$name/"
+          tar czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            open-steel-studio-*.tar.gz
+            open-steel-studio-*.tar.gz.sha256
+          generate_release_notes: true
