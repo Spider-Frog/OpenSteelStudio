@@ -1,6 +1,6 @@
 [package]
 name = "open-steel-studio"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Lighting and OLED screen editor for SteelSeries keyboards"
 license = "GPL-3.0-or-later"
@@ -19,3 +19,50 @@ serde_json = "1.0.154"
 [profile.release]
 lto = true
 strip = true
+
+# `cargo deb` (Debian/Ubuntu package), used by the release workflow.
+[package.metadata.deb]
+maintainer = "SpiderFrog <germanspiderfrog@gmail.com>"
+copyright = "2026 SpiderFrog"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+Per-key RGB lighting, animations, typing effects and the OLED screen (images, \
+clock, scrolling text, GIFs, volume slider) for SteelSeries keyboards. \
+Supports the Apex 5."""
+section = "utils"
+priority = "optional"
+depends = "$auto"
+recommends = "pulseaudio-utils"
+maintainer-scripts = "packaging/debian/"
+assets = [
+    ["target/release/open-steel-studio", "usr/bin/", "755"],
+    ["data/io.github.Spider_Frog.OpenSteelStudio.desktop", "usr/share/applications/", "644"],
+    ["data/icons/io.github.Spider_Frog.OpenSteelStudio.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["data/70-open-steel-studio.rules", "usr/lib/udev/rules.d/", "644"],
+    ["README.md", "usr/share/doc/open-steel-studio/", "644"],
+]
+
+# `cargo generate-rpm` (Fedora package), used by the release workflow.
+[package.metadata.generate-rpm]
+assets = [
+    { source = "target/release/open-steel-studio", dest = "/usr/bin/open-steel-studio", mode = "755" },
+    { source = "data/io.github.Spider_Frog.OpenSteelStudio.desktop", dest = "/usr/share/applications/io.github.Spider_Frog.OpenSteelStudio.desktop", mode = "644" },
+    { source = "data/icons/io.github.Spider_Frog.OpenSteelStudio.svg", dest = "/usr/share/icons/hicolor/scalable/apps/io.github.Spider_Frog.OpenSteelStudio.svg", mode = "644" },
+    { source = "data/70-open-steel-studio.rules", dest = "/usr/lib/udev/rules.d/70-open-steel-studio.rules", mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/open-steel-studio/README.md", mode = "644", doc = true },
+    { source = "LICENSE", dest = "/usr/share/licenses/open-steel-studio/LICENSE", mode = "644", doc = true },
+]
+# Apply the newly installed udev rule to a keyboard that is already plugged in.
+post_install_script = """
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules || :
+    udevadm trigger --subsystem-match=hidraw --action=change || :
+fi
+"""
+
+[package.metadata.generate-rpm.requires]
+gtk4 = ">= 4.12"
+libadwaita = ">= 1.6"
+
+[package.metadata.generate-rpm.recommends]
+pulseaudio-utils = "*"

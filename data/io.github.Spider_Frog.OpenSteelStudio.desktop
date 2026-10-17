@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=OpenSteelStudio
+Comment=Lighting and screen editor for SteelSeries keyboards
+Exec=open-steel-studio
+Icon=io.github.Spider_Frog.OpenSteelStudio
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=SteelSeries;Apex;keyboard;RGB;OLED;lighting;
+StartupNotify=true

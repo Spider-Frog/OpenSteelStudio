@@ -1,6 +1,8 @@
 name: Release
 
-# Push a tag like v0.1.0 (matching the version in Cargo.toml) to publish a release.
+# Push a tag like v0.1.1 (matching the version in Cargo.toml) to publish a release with a
+# tarball, a .deb, an .rpm, an Arch package and an AppImage. Every package is installed and
+# started in a clean container before anything is published.
 on:
   push:
     tags: ['v*']
@@ -8,37 +10,228 @@ on:
 permissions:
   contents: write
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  release:
+  version:
     runs-on: ubuntu-latest
-    # Same base as CI: binaries built on Debian 13 run on Debian 13, Fedora, Arch and newer.
-    container: rust:1-trixie
+    outputs:
+      version: ${{ steps.check.outputs.version }}
     steps:
       - uses: actions/checkout@v5
-      - name: Check the tag matches Cargo.toml
+      - id: check
+        name: Check the tag matches Cargo.toml
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           if [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
             exit 1
           fi
-      - name: Install GTK, libadwaita and a font for the text tests
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # Debian 13 ships GTK 4.18 and libadwaita 1.7 with an older glibc than rolling
+  # distributions, so the tarball and AppImage built here run on most current systems.
+  debian:
+    needs: version
+    runs-on: ubuntu-latest
+    container: rust:1-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends pkg-config libgtk-4-dev libadwaita-1-dev fonts-dejavu-core
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
       - run: cargo build --release
-      - name: Package
+      - name: Tarball
         run: |
           name="open-steel-studio-$GITHUB_REF_NAME-x86_64-linux"
           mkdir "$name"
           cp target/release/open-steel-studio README.md LICENSE data/70-open-steel-studio.rules "$name/"
-          tar czf "$name.tar.gz" "$name"
-          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+          mkdir -p dist
+          tar czf "dist/$name.tar.gz" "$name"
+      - name: Debian package
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build --output dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian
+          path: dist/
+
+  appimage:
+    needs: version
+    runs-on: ubuntu-latest
+    container: rust:1-trixie
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends pkg-config libgtk-4-dev libadwaita-1-dev \
+            wget file desktop-file-utils libglib2.0-bin librsvg2-common
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          DEPLOY_GTK_VERSION: '4'
+          LINUXDEPLOY_OUTPUT_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          wget -q https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          wget -q https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+          chmod +x linuxdeploy-x86_64.AppImage linuxdeploy-plugin-gtk.sh
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir \
+            --executable target/release/open-steel-studio \
+            --desktop-file data/io.github.Spider_Frog.OpenSteelStudio.desktop \
+            --icon-file data/icons/io.github.Spider_Frog.OpenSteelStudio.svg \
+            --plugin gtk --output appimage
+          mkdir -p dist
+          mv OpenSteelStudio-*.AppImage "dist/open-steel-studio-$GITHUB_REF_NAME-x86_64.AppImage"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/
+
+  fedora:
+    needs: version
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: dnf install -y cargo rust gcc gtk4-devel libadwaita-devel dejavu-sans-fonts tar zstd
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: RPM package
+        run: |
+          cargo install cargo-generate-rpm --locked
+          mkdir -p dist
+          cargo generate-rpm --output dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora
+          path: dist/
+
+  arch:
+    needs: version
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita ttf-dejavu
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --release
+      - run: cargo build --release
+      - name: Arch package
+        run: |
+          mkdir pkg
+          cp packaging/arch/PKGBUILD packaging/arch/open-steel-studio.install pkg/
+          cp target/release/open-steel-studio data/io.github.Spider_Frog.OpenSteelStudio.desktop \
+            data/icons/io.github.Spider_Frog.OpenSteelStudio.svg data/70-open-steel-studio.rules \
+            LICENSE README.md pkg/
+          sed -i "s/^pkgver=.*/pkgver=${{ needs.version.outputs.version }}/" pkg/PKGBUILD
+          useradd -m builder
+          chown -R builder pkg
+          su builder -c "cd pkg && makepkg --nodeps --noconfirm"
+          mkdir -p dist
+          cp pkg/*.pkg.tar.zst dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch
+          path: dist/
+
+  # Install each package in a clean container and start it. `--probe` loads every shared
+  # library the program needs, then looks for the keyboard (there is none here).
+  test-debian:
+    needs: debian
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: debian
+      - run: |
+          apt-get update
+          apt-get install -y ./open-steel-studio_*.deb
+          open-steel-studio --probe
+          test -f /usr/lib/udev/rules.d/70-open-steel-studio.rules
+          test -f /usr/share/applications/io.github.Spider_Frog.OpenSteelStudio.desktop
+
+  test-tarball:
+    needs: debian
+    runs-on: ubuntu-latest
+    container: ubuntu:26.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: debian
+      - run: |
+          apt-get update
+          apt-get install -y --no-install-recommends libgtk-4-1 libadwaita-1-0
+          tar xzf open-steel-studio-*.tar.gz
+          ./open-steel-studio-*/open-steel-studio --probe
+
+  test-fedora:
+    needs: fedora
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: fedora
+      - run: |
+          dnf install -y ./open-steel-studio-*.rpm
+          open-steel-studio --probe
+          test -f /usr/lib/udev/rules.d/70-open-steel-studio.rules
+
+  test-arch:
+    needs: arch
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arch
+      - run: |
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm ./open-steel-studio-*.pkg.tar.zst
+          open-steel-studio --probe
+          test -f /usr/lib/udev/rules.d/70-open-steel-studio.rules
+
+  # On another distribution than it was built on, with no GTK installed: everything GTK
+  # needs has to come from inside the AppImage. Only basics every desktop has are added.
+  test-appimage:
+    needs: appimage
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: appimage
+      - run: |
+          dnf install -y fontconfig freetype harfbuzz libX11 libxcb mesa-libEGL mesa-libGL libglvnd-egl libwayland-client libwayland-egl
+          chmod +x open-steel-studio-*.AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ./open-steel-studio-*.AppImage --probe
+
+  publish:
+    needs: [test-debian, test-tarball, test-fedora, test-arch, test-appimage]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            open-steel-studio-*.tar.gz
-            open-steel-studio-*.tar.gz.sha256
+          files: dist/*
           generate_release_notes: true

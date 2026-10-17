@@ -43,14 +43,16 @@ More SteelSeries devices are planned.
 
 ## Install
 
-Download the latest `open-steel-studio-…-x86_64-linux.tar.gz` from [Releases](https://github.com/Spider-Frog/OpenSteelStudio/releases), then:
+Download a package for your system from [Releases](https://github.com/Spider-Frog/OpenSteelStudio/releases). The packages also install the udev rule that lets the app use the keyboard, so there's nothing else to set up.
 
-```sh
-tar xzf open-steel-studio-*-x86_64-linux.tar.gz
-install -Dm755 open-steel-studio-*-x86_64-linux/open-steel-studio ~/.local/bin/open-steel-studio
-```
+| System | File | Install with |
+| --- | --- | --- |
+| Debian 13, Ubuntu 26.04 and newer | `open-steel-studio_…_amd64.deb` | `sudo apt install ./open-steel-studio_*.deb` |
+| Fedora | `open-steel-studio-….x86_64.rpm` | `sudo dnf install ./open-steel-studio-*.rpm` |
+| Arch, CachyOS, Manjaro | `open-steel-studio-…-x86_64.pkg.tar.zst` | `sudo pacman -U open-steel-studio-*.pkg.tar.zst` |
+| Anything else | `open-steel-studio-…-x86_64.AppImage` | `chmod +x` it and run it |
 
-It needs GTK 4.12 and libadwaita 1.6 or newer (for example Debian 13, Fedora 41 or Arch). To let it use the keyboard, install the included udev rule as described under [Keyboard access](#keyboard-access).
+The AppImage brings its own GTK and needs no installing, but it can't install the udev rule: the app's "How to fix" button shows the two commands for that (see [Keyboard access](#keyboard-access)). There is also a plain `.tar.gz` with just the program, for systems with GTK 4.12 and libadwaita 1.6 or newer.
 
 ## Building
 

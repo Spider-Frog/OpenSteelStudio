@@ -50,9 +50,27 @@ fn write(path: &Path, contents: &str) -> io::Result<()> {
     std::fs::write(path, contents)
 }
 
-/// Adds OpenSteelStudio to the app menu, pointing at the program that is running now.
+/// The program to start: the AppImage file when running from one (its contents live in a
+/// temporary folder that changes every run), otherwise this executable.
+fn program() -> io::Result<PathBuf> {
+    match std::env::var_os("APPIMAGE") {
+        Some(appimage) => Ok(appimage.into()),
+        None => std::env::current_exe(),
+    }
+}
+
+/// Whether a package already put OpenSteelStudio in the app menu.
+fn installed_system_wide() -> bool {
+    glib::system_data_dirs().iter().any(|dir| dir.join("applications").join(format!("{APP_ID}.desktop")).exists())
+}
+
+/// Adds OpenSteelStudio to the app menu, pointing at the program that is running now,
+/// unless a package already did.
 pub fn install_launcher() -> io::Result<()> {
-    write(&launcher_path(), &entry(&std::env::current_exe()?, "")?)
+    if installed_system_wide() {
+        return Ok(());
+    }
+    write(&launcher_path(), &entry(&program()?, "")?)
 }
 
 pub fn autostart_enabled() -> bool {
@@ -63,7 +81,7 @@ pub fn autostart_enabled() -> bool {
 pub fn set_autostart(on: bool) -> io::Result<()> {
     let path = autostart_path();
     if on {
-        write(&path, &entry(&std::env::current_exe()?, BACKGROUND_FLAG)?)
+        write(&path, &entry(&program()?, BACKGROUND_FLAG)?)
     } else {
         match std::fs::remove_file(&path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),

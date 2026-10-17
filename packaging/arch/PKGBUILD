@@ -1,0 +1,23 @@
+# Packages a binary built beforehand with `cargo build --release`; the release workflow
+# copies it and the data files next to this PKGBUILD and runs `makepkg`.
+pkgname=open-steel-studio
+pkgver=0.1.1
+pkgrel=1
+pkgdesc="Lighting and OLED screen editor for SteelSeries keyboards"
+arch=('x86_64')
+url="https://github.com/Spider-Frog/OpenSteelStudio"
+license=('GPL-3.0-or-later')
+depends=('gtk4' 'libadwaita' 'glib2' 'pango' 'cairo' 'gcc-libs' 'glibc')
+optdepends=('libpulse: volume slider (pactl)')
+install=open-steel-studio.install
+options=('!debug')
+
+package() {
+    cd "$startdir"
+    install -Dm755 open-steel-studio "$pkgdir/usr/bin/open-steel-studio"
+    install -Dm644 io.github.Spider_Frog.OpenSteelStudio.desktop -t "$pkgdir/usr/share/applications/"
+    install -Dm644 io.github.Spider_Frog.OpenSteelStudio.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps/"
+    install -Dm644 70-open-steel-studio.rules -t "$pkgdir/usr/lib/udev/rules.d/"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}
