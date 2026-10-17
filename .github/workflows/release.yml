@@ -1,14 +1,23 @@
 name: Release
 
-# Push a tag like v0.1.1 (matching the version in Cargo.toml) to publish a release with a
-# tarball, a .deb, an .rpm, an Arch package and an AppImage. Every package is installed and
-# started in a clean container before anything is published.
+# Every push to main (in practice: every merged pull request) is released: it gets the next
+# version, a tarball, a .deb, an .rpm, an Arch package and an AppImage, and a v0.x.y tag.
+# Every package is installed and started in a clean container before anything is published.
+#
+# Versions: the patch number goes up by one per release. To bump further (0.2.0, say), raise
+# the version in Cargo.toml in the pull request; it is used when it's past the last release.
+# Releases stay below 1.0 for now.
 on:
   push:
-    tags: ['v*']
+    branches: [main]
 
 permissions:
   contents: write
+
+# One release at a time, so two quick merges can't claim the same version.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -17,17 +26,37 @@ jobs:
   version:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.check.outputs.version }}
+      version: ${{ steps.next.outputs.version }}
     steps:
       - uses: actions/checkout@v5
-      - id: check
-        name: Check the tag matches Cargo.toml
+        with:
+          fetch-depth: 0
+      - id: next
+        name: Work out the version
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Tag $GITHUB_REF_NAME doesn't match version $version in Cargo.toml"
-            exit 1
+          # Re-running the workflow for an already released commit keeps its version.
+          current=$(git tag --points-at HEAD --list 'v*' | sort -V | tail -n 1)
+          if [ -n "$current" ]; then
+            version=${current#v}
+          else
+            latest=$(git tag --list 'v*' | sort -V | tail -n 1)
+            cargo=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
+            if [ -z "$latest" ]; then
+              version=$cargo
+            else
+              IFS=. read -r major minor patch <<< "${latest#v}"
+              version="$major.$minor.$((patch + 1))"
+              # A version raised in Cargo.toml wins when it is higher.
+              if [ "$(printf '%s\n%s\n' "$version" "$cargo" | sort -V | tail -n 1)" = "$cargo" ]; then
+                version=$cargo
+              fi
+            fi
           fi
+          case "$version" in
+            0.*) ;;
+            *) echo "Releases stay on 0.x for now, but the next version would be $version"; exit 1 ;;
+          esac
+          echo "Releasing $version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
   # Debian 13 ships GTK 4.18 and libadwaita 1.7 with an older glibc than rolling
@@ -38,6 +67,8 @@ jobs:
     container: rust:1-trixie
     steps:
       - uses: actions/checkout@v5
+      - name: Use version ${{ needs.version.outputs.version }}
+        run: sed -i '0,/^version = .*/s//version = "${{ needs.version.outputs.version }}"/' Cargo.toml
       - name: Install build dependencies
         run: |
           apt-get update
@@ -47,7 +78,7 @@ jobs:
       - run: cargo build --release
       - name: Tarball
         run: |
-          name="open-steel-studio-$GITHUB_REF_NAME-x86_64-linux"
+          name="open-steel-studio-v${{ needs.version.outputs.version }}-x86_64-linux"
           mkdir "$name"
           cp target/release/open-steel-studio README.md LICENSE data/70-open-steel-studio.rules "$name/"
           mkdir -p dist
@@ -56,7 +87,7 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --output dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: debian
           path: dist/
@@ -67,6 +98,8 @@ jobs:
     container: rust:1-trixie
     steps:
       - uses: actions/checkout@v5
+      - name: Use version ${{ needs.version.outputs.version }}
+        run: sed -i '0,/^version = .*/s//version = "${{ needs.version.outputs.version }}"/' Cargo.toml
       - name: Install build dependencies
         run: |
           apt-get update
@@ -89,8 +122,8 @@ jobs:
             --icon-file data/icons/io.github.Spider_Frog.OpenSteelStudio.svg \
             --plugin gtk --output appimage
           mkdir -p dist
-          mv OpenSteelStudio-*.AppImage "dist/open-steel-studio-$GITHUB_REF_NAME-x86_64.AppImage"
-      - uses: actions/upload-artifact@v4
+          mv OpenSteelStudio-*.AppImage "dist/open-steel-studio-v${{ needs.version.outputs.version }}-x86_64.AppImage"
+      - uses: actions/upload-artifact@v5
         with:
           name: appimage
           path: dist/
@@ -103,6 +136,8 @@ jobs:
       - name: Install build dependencies
         run: dnf install -y cargo rust gcc gtk4-devel libadwaita-devel dejavu-sans-fonts tar zstd
       - uses: actions/checkout@v5
+      - name: Use version ${{ needs.version.outputs.version }}
+        run: sed -i '0,/^version = .*/s//version = "${{ needs.version.outputs.version }}"/' Cargo.toml
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
       - run: cargo build --release
@@ -111,7 +146,7 @@ jobs:
           cargo install cargo-generate-rpm --locked
           mkdir -p dist
           cargo generate-rpm --output dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: fedora
           path: dist/
@@ -124,6 +159,8 @@ jobs:
       - name: Install build dependencies
         run: pacman -Syu --noconfirm --needed base-devel rust gtk4 libadwaita ttf-dejavu
       - uses: actions/checkout@v5
+      - name: Use version ${{ needs.version.outputs.version }}
+        run: sed -i '0,/^version = .*/s//version = "${{ needs.version.outputs.version }}"/' Cargo.toml
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --release
       - run: cargo build --release
@@ -140,7 +177,7 @@ jobs:
           su builder -c "cd pkg && makepkg --nodeps --noconfirm"
           mkdir -p dist
           cp pkg/*.pkg.tar.zst dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: arch
           path: dist/
@@ -152,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: debian
       - run: |
@@ -167,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ubuntu:26.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: debian
       - run: |
@@ -181,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: fedora
       - run: |
@@ -194,7 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: arch
       - run: |
@@ -204,25 +241,30 @@ jobs:
           test -f /usr/lib/udev/rules.d/70-open-steel-studio.rules
 
   # On another distribution than it was built on, with no GTK installed: everything GTK
-  # needs has to come from inside the AppImage. Only basics every desktop has are added.
+  # needs has to come from inside the AppImage. The container only gets the libraries that
+  # AppImages leave to the system on purpose (the AppImage "excludelist"), which every
+  # desktop has: graphics drivers, X11/Wayland, fonts, text shaping and the like.
   test-appimage:
     needs: appimage
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: appimage
       - run: |
-          dnf install -y fontconfig freetype harfbuzz libX11 libxcb mesa-libEGL mesa-libGL libglvnd-egl libwayland-client libwayland-egl
+          dnf install -y --setopt=install_weak_deps=False \
+            libstdc++ mesa-libGL mesa-libEGL mesa-libgbm libglvnd-glx libglvnd-egl libglvnd-opengl libdrm \
+            libX11 libX11-xcb libxcb libwayland-client alsa-lib pipewire-libs fontconfig freetype harfbuzz \
+            fribidi expat libcom_err libgpg-error libICE libSM libusb1 libuuid gmp
           chmod +x open-steel-studio-*.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./open-steel-studio-*.AppImage --probe
 
   publish:
-    needs: [test-debian, test-tarball, test-fedora, test-arch, test-appimage]
+    needs: [version, test-debian, test-tarball, test-fedora, test-arch, test-appimage]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
@@ -233,5 +275,8 @@ jobs:
           cat SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ needs.version.outputs.version }}
+          name: OpenSteelStudio ${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true

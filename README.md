@@ -65,6 +65,8 @@ cargo build --release
 
 On Arch-based systems the libraries come from the `gtk4` and `libadwaita` packages.
 
+Development happens on branches. Pull requests into `main` are checked (clippy and tests), and every merge into `main` is released automatically: the next `0.x.y` version, a tag, and all packages. To skip ahead (to 0.2.0, say), raise the version in `Cargo.toml` in the pull request.
+
 ## Keyboard access
 
 Linux only lets programs control the keyboard with permission. Install the included udev rule once (the app's "How to fix" button shows the same steps):

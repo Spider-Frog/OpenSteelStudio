@@ -1,9 +1,9 @@
 name: CI
 
+# Checks pull requests before they're merged; main itself is built by the release workflow.
 on:
-  push:
-    branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   test:
