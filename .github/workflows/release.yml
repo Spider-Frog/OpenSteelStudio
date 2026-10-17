@@ -87,7 +87,7 @@ jobs:
         run: |
           cargo install cargo-deb --locked
           cargo deb --no-build --output dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: debian
           path: dist/
@@ -123,7 +123,7 @@ jobs:
             --plugin gtk --output appimage
           mkdir -p dist
           mv OpenSteelStudio-*.AppImage "dist/open-steel-studio-v${{ needs.version.outputs.version }}-x86_64.AppImage"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: appimage
           path: dist/
@@ -146,7 +146,7 @@ jobs:
           cargo install cargo-generate-rpm --locked
           mkdir -p dist
           cargo generate-rpm --output dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: fedora
           path: dist/
@@ -177,7 +177,7 @@ jobs:
           su builder -c "cd pkg && makepkg --nodeps --noconfirm"
           mkdir -p dist
           cp pkg/*.pkg.tar.zst dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: arch
           path: dist/
@@ -189,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     container: debian:trixie
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: debian
       - run: |
@@ -204,7 +204,7 @@ jobs:
     runs-on: ubuntu-latest
     container: ubuntu:26.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: debian
       - run: |
@@ -218,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: fedora
       - run: |
@@ -231,7 +231,7 @@ jobs:
     runs-on: ubuntu-latest
     container: archlinux:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: arch
       - run: |
@@ -241,17 +241,22 @@ jobs:
           test -f /usr/lib/udev/rules.d/70-open-steel-studio.rules
 
   # On another distribution than it was built on, with no GTK installed: everything GTK
-  # needs has to come from inside the AppImage. Only basics every desktop has are added.
+  # needs has to come from inside the AppImage. The container only gets the libraries that
+  # AppImages leave to the system on purpose (the AppImage "excludelist"), which every
+  # desktop has: graphics drivers, X11/Wayland, fonts, text shaping and the like.
   test-appimage:
     needs: appimage
     runs-on: ubuntu-latest
     container: fedora:latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           name: appimage
       - run: |
-          dnf install -y fontconfig freetype harfbuzz libX11 libxcb mesa-libEGL mesa-libGL libglvnd-egl libwayland-client libwayland-egl
+          dnf install -y --setopt=install_weak_deps=False \
+            libstdc++ mesa-libGL mesa-libEGL mesa-libgbm libglvnd-glx libglvnd-egl libglvnd-opengl libdrm \
+            libX11 libX11-xcb libxcb libwayland-client alsa-lib pipewire-libs fontconfig freetype harfbuzz \
+            fribidi expat libcom_err libgpg-error libICE libSM libusb1 libuuid gmp
           chmod +x open-steel-studio-*.AppImage
           APPIMAGE_EXTRACT_AND_RUN=1 ./open-steel-studio-*.AppImage --probe
 
@@ -259,7 +264,7 @@ jobs:
     needs: [version, test-debian, test-tarball, test-fedora, test-arch, test-appimage]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v5
         with:
           path: dist
           merge-multiple: true
