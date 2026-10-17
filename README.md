@@ -94,10 +94,12 @@ Animations, typing effects, the clock and GIFs are rendered by the app, not stor
 - Closing the window while **Send to keyboard** is on keeps the app running without a window. Open it again from your app menu (the first time it adds itself there and shows a notification).
 - **Start at login** in the main menu starts it without a window when you log in, so your lighting comes back after a reboot.
 - **Quit** in the main menu (Ctrl+Q), or `open-steel-studio --quit`, stops it completely.
+- Starting a different build (another version, or a copy elsewhere, like an AppImage next to an installed package) replaces the running one; starting the same one again just shows its window.
 
 Command-line tools:
 
 ```sh
+open-steel-studio --version            # show which version this is
 open-steel-studio --probe              # read-only: find the keyboard and check its descriptors
 open-steel-studio --restore-lighting   # hand the lighting back to the keyboard's own lighting
 open-steel-studio --background         # start without a window (used at login)

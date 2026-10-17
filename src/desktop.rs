@@ -52,7 +52,7 @@ fn write(path: &Path, contents: &str) -> io::Result<()> {
 
 /// The program to start: the AppImage file when running from one (its contents live in a
 /// temporary folder that changes every run), otherwise this executable.
-fn program() -> io::Result<PathBuf> {
+pub fn program() -> io::Result<PathBuf> {
     match std::env::var_os("APPIMAGE") {
         Some(appimage) => Ok(appimage.into()),
         None => std::env::current_exe(),
