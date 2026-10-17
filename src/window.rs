@@ -16,7 +16,7 @@ use crate::profile::{self, Profile};
 use crate::ui::{icon_button_content, toast};
 use crate::device::{self, Link, Status};
 use crate::profile::Settings;
-use crate::{desktop, engine, keymap, lighting_page, screen_page, volume};
+use crate::{desktop, engine, keymap, lighting_page, locks, screen_page, volume};
 
 const ACCESS_RULES: &str = include_str!("../data/70-open-steel-studio.rules");
 
@@ -104,6 +104,7 @@ pub fn build(app: &adw::Application) {
     add_actions(&window, &editor, &link, &stack, &toasts);
     engine::start(&editor);
     volume::follow(&editor);
+    locks::follow(&editor);
     preview_typing(&window, &editor);
     connect_keyboard(&window, &link, &send, &banner, &toasts);
 

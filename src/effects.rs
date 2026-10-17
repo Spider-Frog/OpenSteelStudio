@@ -7,6 +7,7 @@ use std::f64::consts::TAU;
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{self, Key};
+use crate::locks::Locks;
 use crate::model::{Lighting, Rgb};
 use crate::volume::{self, Level};
 
@@ -91,6 +92,23 @@ impl VolumeBar {
     }
 }
 
+/// Colors for Caps Lock, Num Lock and Scroll Lock while they are on.
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LockKeys {
+    pub enabled: bool,
+    pub caps: Rgb,
+    pub num: Rgb,
+    pub scroll: Rgb,
+}
+
+impl Default for LockKeys {
+    fn default() -> Self {
+        let white = Rgb::new(255, 255, 255);
+        Self { enabled: true, caps: white, num: white, scroll: white }
+    }
+}
+
 #[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LightingFx {
@@ -104,6 +122,7 @@ pub struct LightingFx {
     /// Seconds a key press stays visible.
     pub fade: f64,
     pub volume_bar: VolumeBar,
+    pub lock_keys: LockKeys,
 }
 
 impl Default for LightingFx {
@@ -117,6 +136,7 @@ impl Default for LightingFx {
             typing_rainbow: false,
             fade: 0.8,
             volume_bar: VolumeBar::Off,
+            lock_keys: LockKeys::default(),
         }
     }
 }
@@ -155,7 +175,16 @@ fn hash01(a: u32, b: u32) -> f64 {
 }
 
 /// Computes what every LED shows at time `t`.
-pub fn render(fx: &LightingFx, keys: &[Key], colors: &Lighting, t: f64, presses: &[Press], volume: Option<Level>) -> Lighting {
+#[allow(clippy::too_many_arguments)]
+pub fn render(
+    fx: &LightingFx,
+    keys: &[Key],
+    colors: &Lighting,
+    t: f64,
+    presses: &[Press],
+    volume: Option<Level>,
+    locks: Locks,
+) -> Lighting {
     let speed = fx.speed.max(0.01);
     let mut centers = [None; 256];
     for key in keys {
@@ -224,6 +253,16 @@ pub fn render(fx: &LightingFx, keys: &[Key], colors: &Lighting, t: f64, presses:
         out.set(led, base.mix(tint, level));
     }
 
+    // Lock keys show their color over every effect while they're on.
+    if fx.lock_keys.enabled {
+        let lit = [(locks.caps, 0x39, fx.lock_keys.caps), (locks.num, 0x53, fx.lock_keys.num), (locks.scroll, 0x47, fx.lock_keys.scroll)];
+        for (on, led, color) in lit {
+            if on {
+                out.set(led, color);
+            }
+        }
+    }
+
     if let Some(volume) = volume.filter(|v| v.showing(t)) {
         volume_bar(fx.volume_bar, volume, t, &mut out);
     }
@@ -274,7 +313,7 @@ mod tests {
     #[test]
     fn static_is_identity() {
         let (keys, colors) = setup();
-        let out = render(&LightingFx::default(), &keys, &colors, 12.3, &[], None);
+        let out = render(&LightingFx::default(), &keys, &colors, 12.3, &[], None, Locks::default());
         assert!(keys.iter().all(|k| out.get(k.led) == colors.get(k.led)));
     }
 
@@ -282,8 +321,8 @@ mod tests {
     fn breathing_dims_and_brightens() {
         let (keys, colors) = setup();
         let fx = LightingFx { background: Background::Breathing, ..Default::default() };
-        let dark = render(&fx, &keys, &colors, 0.0, &[], None).get(0x04);
-        let bright = render(&fx, &keys, &colors, 2.0, &[], None).get(0x04);
+        let dark = render(&fx, &keys, &colors, 0.0, &[], None, Locks::default()).get(0x04);
+        let bright = render(&fx, &keys, &colors, 2.0, &[], None, Locks::default()).get(0x04);
         assert!(dark.b < 20 && bright.b > 190, "{dark:?} {bright:?}");
     }
 
@@ -291,7 +330,7 @@ mod tests {
     fn wave_moves() {
         let (keys, colors) = setup();
         let fx = LightingFx { background: Background::Wave, ..Default::default() };
-        assert_ne!(render(&fx, &keys, &colors, 0.0, &[], None).get(0x04), render(&fx, &keys, &colors, 0.5, &[], None).get(0x04));
+        assert_ne!(render(&fx, &keys, &colors, 0.0, &[], None, Locks::default()).get(0x04), render(&fx, &keys, &colors, 0.5, &[], None, Locks::default()).get(0x04));
     }
 
     #[test]
@@ -299,10 +338,10 @@ mod tests {
         let (keys, colors) = setup();
         let fx = LightingFx { typing: Typing::Light, typing_color: Rgb::new(255, 0, 0), ..Default::default() };
         let press = [Press { led: 0x04, t: 1.0 }];
-        let now = render(&fx, &keys, &colors, 1.0, &press, None);
+        let now = render(&fx, &keys, &colors, 1.0, &press, None, Locks::default());
         assert_eq!(now.get(0x04), Rgb::new(255, 0, 0));
         assert_eq!(now.get(0x05), colors.get(0x05), "other keys untouched");
-        assert_eq!(render(&fx, &keys, &colors, 1.0 + fx.fade + 0.01, &press, None).get(0x04), colors.get(0x04));
+        assert_eq!(render(&fx, &keys, &colors, 1.0 + fx.fade + 0.01, &press, None, Locks::default()).get(0x04), colors.get(0x04));
         assert!(fx.is_animated(1.5, Some(1.0)));
         assert!(!fx.is_animated(5.0, Some(1.0)));
     }
@@ -316,8 +355,8 @@ mod tests {
         let ((x0, y0), (x1, y1)) = (at(from), at(far));
         let distance = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
         let press = [Press { led: from, t: 0.0 }];
-        assert!(render(&fx, &keys, &colors, 0.0, &press, None).get(far).r < 10);
-        assert!(render(&fx, &keys, &colors, distance / RIPPLE_SPEED, &press, None).get(far).r > 100);
+        assert!(render(&fx, &keys, &colors, 0.0, &press, None, Locks::default()).get(far).r < 10);
+        assert!(render(&fx, &keys, &colors, distance / RIPPLE_SPEED, &press, None, Locks::default()).get(far).r > 100);
     }
 
     #[test]
@@ -325,25 +364,42 @@ mod tests {
         let (keys, colors) = setup();
         let fx = LightingFx { volume_bar: VolumeBar::FunctionKeys, ..Default::default() };
         let half = Level { level: 0.5, muted: false, changed_at: Some(1.0) };
-        let out = render(&fx, &keys, &colors, 1.5, &[], Some(half));
+        let out = render(&fx, &keys, &colors, 1.5, &[], Some(half), Locks::default());
         let f = |n: u8| out.get(0x3A + n - 1); // F1..F12
         assert!(f(1).g > 200 && f(6).r > 200, "the lower half is lit: {:?} {:?}", f(1), f(6));
         assert_eq!(f(7), Rgb::new(14, 14, 14), "the upper half is empty");
         assert_eq!(out.get(0x04), colors.get(0x04), "other keys untouched");
 
-        let muted = render(&fx, &keys, &colors, 1.5, &[], Some(Level { muted: true, ..half }));
+        let muted = render(&fx, &keys, &colors, 1.5, &[], Some(Level { muted: true, ..half }), Locks::default());
         assert_eq!(muted.get(0x45), Rgb::new(90, 0, 0));
-        let later = render(&fx, &keys, &colors, 1.0 + volume::HOLD + 0.1, &[], Some(half));
+        let later = render(&fx, &keys, &colors, 1.0 + volume::HOLD + 0.1, &[], Some(half), Locks::default());
         assert_eq!(later.get(0x3A), colors.get(0x3A), "gone after the hold time");
-        let off = render(&LightingFx::default(), &keys, &colors, 1.5, &[], Some(half));
+        let off = render(&LightingFx::default(), &keys, &colors, 1.5, &[], Some(half), Locks::default());
         assert_eq!(off.get(0x3A), colors.get(0x3A), "no bar unless chosen");
+    }
+
+    #[test]
+    fn lock_keys_show_their_color() {
+        let (keys, colors) = setup();
+        let red = Rgb::new(255, 0, 0);
+        let mut fx = LightingFx { background: Background::Wave, ..Default::default() };
+        fx.lock_keys.caps = red;
+        let locks = Locks { caps: true, num: false, scroll: true };
+        let out = render(&fx, &keys, &colors, 3.0, &[], None, locks);
+        assert_eq!(out.get(0x39), red, "Caps Lock in its color, over the wave");
+        assert_eq!(out.get(0x47), Rgb::new(255, 255, 255), "Scroll Lock in the default white");
+        assert_ne!(out.get(0x53), Rgb::new(255, 255, 255), "Num Lock is off, so it shows the wave");
+
+        fx.lock_keys.enabled = false;
+        let out = render(&fx, &keys, &colors, 3.0, &[], None, locks);
+        assert_ne!(out.get(0x39), red, "turned off");
     }
 
     #[test]
     fn starlight_twinkles_some_keys() {
         let (keys, colors) = setup();
         let fx = LightingFx { background: Background::Starlight, ..Default::default() };
-        let out = render(&fx, &keys, &colors, 7.0, &[], None);
+        let out = render(&fx, &keys, &colors, 7.0, &[], None, Locks::default());
         let lit = keys.iter().filter(|k| out.get(k.led).b > 20).count();
         assert!(lit > 3 && lit < keys.len() / 2, "{lit} keys lit");
     }

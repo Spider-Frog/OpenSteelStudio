@@ -22,7 +22,7 @@ struct Engine {
 
 pub fn start(editor: &Rc<Editor>) {
     let engine = Rc::new(Engine { editor: Rc::downgrade(editor), cache: RefCell::default(), ticking: Cell::new(false) });
-    for topic in [Topic::Layout, Topic::Lighting, Topic::Screen, Topic::Effects, Topic::ScreenFx, Topic::KeyPress, Topic::Volume] {
+    for topic in [Topic::Layout, Topic::Lighting, Topic::Screen, Topic::Effects, Topic::ScreenFx, Topic::KeyPress, Topic::Volume, Topic::Locks] {
         editor.connect(topic, glib::clone!(#[strong] engine, move || engine.wake()));
     }
     engine.wake();
@@ -61,7 +61,8 @@ impl Engine {
         let t = editor.now();
         let presses = editor.presses();
         let volume = editor.volume();
-        let lighting = effects::render(&editor.lighting_fx(), &editor.output_keys(), &editor.lighting(), t, &presses, volume);
+        let lighting =
+            effects::render(&editor.lighting_fx(), &editor.output_keys(), &editor.lighting(), t, &presses, volume, editor.locks());
         let animation = editor.animation();
         let screen = {
             let image = editor.screen();

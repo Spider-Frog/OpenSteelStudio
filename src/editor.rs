@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use crate::effects::{LightingFx, Press};
 use crate::layout::{self, Key, Region};
+use crate::locks::Locks;
 use crate::model::{Bitmap, Lighting, Rgb};
 use crate::screen_fx::{Animation, ScreenFx};
 use crate::volume::Level;
@@ -49,6 +50,8 @@ pub enum Topic {
     KeyPress,
     /// The system volume changed.
     Volume,
+    /// Caps Lock, Num Lock or Scroll Lock was switched.
+    Locks,
     /// New live frames were rendered.
     Frame,
 }
@@ -83,6 +86,7 @@ pub struct Editor {
     total_presses: Cell<u64>,
     hardware_typing: Cell<bool>,
     volume: Cell<Option<Level>>,
+    locks: Cell<Locks>,
     /// What the keyboard shows right now, effects included.
     live_lighting: RefCell<Lighting>,
     live_screen: RefCell<Bitmap>,
@@ -115,6 +119,7 @@ impl Editor {
             total_presses: Cell::new(0),
             hardware_typing: Cell::new(false),
             volume: Cell::new(None),
+            locks: Cell::new(Locks::default()),
             listeners: RefCell::default(),
         })
     }
@@ -430,6 +435,18 @@ impl Editor {
         let changed_at = if show { Some(self.now()) } else { self.volume.get().and_then(|v| v.changed_at) };
         self.volume.set(Some(Level { level, muted, changed_at }));
         self.emit(Topic::Volume);
+    }
+
+    // Lock keys
+
+    pub fn locks(&self) -> Locks {
+        self.locks.get()
+    }
+
+    pub fn set_locks(&self, locks: Locks) {
+        if self.locks.replace(locks) != locks {
+            self.emit(Topic::Locks);
+        }
     }
 
     // Live output

@@ -22,6 +22,7 @@ More SteelSeries devices are planned.
 - Animated effects: breathing, rainbow wave (five directions), color cycle and starlight, with adjustable speed
 - Typing effects: keys light up or send out a ripple when pressed, in any color or rainbow
 - Volume bar: when the system volume changes, F1–F12 or the number row show it for a moment, green to red
+- Lock keys: Caps Lock, Num Lock and Scroll Lock light up in their own color while they're on, over any effect
 
 **Screen (128×40 OLED)**
 - Pixel editor with pencil, eraser, invert and clear

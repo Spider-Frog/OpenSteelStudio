@@ -12,6 +12,7 @@ mod keyboard_view;
 mod keymap;
 mod layout;
 mod lighting_page;
+mod locks;
 mod model;
 mod oled_art;
 mod profile;
